@@ -121,3 +121,32 @@ func TestOverride_GroupWritableIsRefused(t *testing.T) {
 		t.Fatalf("group-writable override was applied (mail_read = %s)", d)
 	}
 }
+
+// Loosenings must report exactly what the daemon's gate would be asked
+// to approve, so `policy show` can flag it.
+func TestLooseningsExported(t *testing.T) {
+	p := writeTestOverride(t, "tools:\n  mail_send: {decision: allow}\n  mail_read: {decision: deny}\n", 0o600)
+	got, err := Loosenings(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gateSaw []string
+	if _, err := NewGated(context.Background(), p, nil, func(c []string) error { gateSaw = c; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "\n") != strings.Join(gateSaw, "\n") || len(got) != 1 {
+		t.Fatalf("Loosenings = %q, gate saw %q; want the same single loosening", got, gateSaw)
+	}
+
+	tight := writeTestOverride(t, "tools:\n  mail_read: {decision: deny}\n", 0o600)
+	if got, err := Loosenings(tight); err != nil || len(got) != 0 {
+		t.Errorf("tightening-only override: got %q, %v; want none", got, err)
+	}
+	if got, err := Loosenings(filepath.Join(t.TempDir(), "absent.yaml")); err != nil || got != nil {
+		t.Errorf("missing override: got %q, %v; want nil, nil", got, err)
+	}
+	bad := writeTestOverride(t, "tools:\n  mail_send: {decision: allow}\n", 0o664)
+	if _, err := Loosenings(bad); err == nil {
+		t.Error("group-writable override should report that it is not applied")
+	}
+}

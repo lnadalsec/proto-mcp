@@ -254,7 +254,7 @@ surface (`internal/secret`, `internal/keystore`, `internal/logging`,
 | H-3 (detached revoke on Ctrl-C) | **FIXED** — `client.go:367-372`, `resume.go:95-104` |
 | M-1 (AppVersion warning) | **PARTIAL** — only printed in `whoami` (`main.go:217-218`); `backfill`/`login` silent |
 | M-2 (DB file perms) | **FIXED** — `store.go:84-91` chmods `.db`/`-wal`/`-shm` to 0600 (silent on chmod failure — minor) |
-| M-3 (umask 0o077) | **FIXED** — `main.go:44`, first runtime call |
+| M-3 (umask 0o077) | **FIXED** — `cmd/protonmcp/main.go` (first runtime call) and `cmd/protonmcpd/main.go` (right after `--version`, before any file or the socket is created) |
 | M-4 (error wrapping leaks crypto chain) | **NOT FIXED** — `client.go:460` still `%w`s gopenpgp errors; no sentinel |
 | M-5 (error classification) | **NOT FIXED** — `main.go:98` still prints raw chain |
 | L-1 (prompt error swallow) | **FIXED** — `prompt.go:87` |

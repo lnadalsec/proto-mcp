@@ -102,3 +102,34 @@ func subset(a, b []string) bool {
 	}
 	return true
 }
+
+// Loosenings reports every way the override at overridePath is more
+// permissive than the embedded default — exactly the list a gated
+// engine (the daemon, NewGated with its Touch ID gate) asks the user
+// to approve when it loads the override. If that approval is refused,
+// the daemon keeps the defaults for the whole override, so display
+// tools (`protonmcp policy show`) must not present these entries as
+// simply "in force".
+//
+// Returns nil when there is no override, the file does not exist, or
+// it only tightens the defaults. An override that cannot be applied at
+// all (unreadable, invalid YAML, group/other-writable) returns an
+// error: the daemon would ignore it and run the defaults.
+func Loosenings(overridePath string) ([]string, error) {
+	if overridePath == "" {
+		return nil, nil
+	}
+	base, err := parseDocument(defaultYAML)
+	if err != nil {
+		return nil, fmt.Errorf("parse embedded default policy: %w", err)
+	}
+	cand, err := parseDocument(defaultYAML)
+	if err != nil {
+		return nil, fmt.Errorf("parse embedded default policy: %w", err)
+	}
+	e := &Engine{override: overridePath}
+	if err := e.applyOverrideInto(&cand); err != nil {
+		return nil, err
+	}
+	return loosenings(base, cand), nil
+}
