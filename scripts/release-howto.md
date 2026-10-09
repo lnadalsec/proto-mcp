@@ -85,11 +85,11 @@ lets you write release notes before flipping the visibility.
    # OR: make bootstrap-tap VERSION=1.0.0 SHA256=$SHA
    ```
    The script clones the tap repo
-   (`github.com/just-an-oldsalt/homebrew-proto-mcp`), updates
+   (`github.com/lnadalsec/homebrew-proto-mcp`), updates
    `Casks/proto-mcp.rb` with the new version + sha256, commits,
    and pushes. Users then run:
    ```sh
-   brew tap just-an-oldsalt/proto-mcp
+   brew tap lnadalsec/proto-mcp
    brew install --cask proto-mcp
    ```
 
@@ -159,9 +159,10 @@ Apple's notary submission log has the actual reason:
 ```sh
 xcrun notarytool log <submission-id> --keychain-profile protonmcp-notary
 ```
-Common causes: missing entitlement (we keep these minimal), hard-
-linked symbols (Go runtime needs `allow-unsigned-executable-memory`,
-which is already in the entitlements plist).
+Common causes: a binary signed without the hardened runtime or a
+secure timestamp. The entitlements plist is intentionally empty (Go
+needs no `allow-unsigned-executable-memory`). `make notarize` fails
+unless Apple returns `Accepted` and prints the submission id.
 
 **Gatekeeper still warns after publishing**
 The cask installs binaries — Gatekeeper's online ticket lookup

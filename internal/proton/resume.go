@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/go-resty/resty/v2"
@@ -26,6 +27,14 @@ type ResumeArgs struct {
 	AccessToken   string // current access token (may still be valid)
 	RefreshToken  string // refresh token (single-use on Proton's side)
 	SaltedKeyPass secret.Secret
+
+	// OnAuthUpdate, if set, is installed as the Session's OnAuthUpdate
+	// BEFORE the first API call, so a token rotation triggered inside
+	// Resume itself (auto-refresh on an expired access token) is
+	// persisted even if a later step of Resume fails. Without it, a
+	// transient error after the refresh would drop the only valid
+	// refresh token — the stored one is single-use and already burned.
+	OnAuthUpdate func(uid, accessToken, refreshToken string)
 }
 
 // Resume rebuilds a Session from a previously-stored access + refresh
@@ -86,13 +95,21 @@ func Resume(ctx context.Context, mgr *gpa.Manager, args ResumeArgs) (*Session, e
 	sess.installAuthHandler()
 	sess.installCalendarMemberHook()
 
-	closeAndWrap := func(format string, vals ...any) error {
-		// Best-effort revoke. If the refresh succeeded but a follow-up
-		// call failed, the access token we just got is still good and
-		// we should revoke it server-side rather than leak it.
-		revokeCtx, cancel := detachedShutdownCtx()
-		defer cancel()
-		_ = client.AuthDelete(revokeCtx)
+	// closeAndWrap releases the client. It revokes the session
+	// server-side ONLY when Proton itself said the credentials are
+	// dead (revoke=true): the session is unusable anyway and the
+	// revoke is best-effort hygiene. On 5xx / 429 / network errors,
+	// or a local unlock failure, the session is still valid and is
+	// the one stored in the Keychain (or just rotated into it via
+	// OnAuthUpdate) — revoking it would turn a transient outage into
+	// a forced re-login, and could kill a session another process
+	// (CLI vs daemon) is actively using.
+	closeAndWrap := func(revoke bool, format string, vals ...any) error {
+		if revoke {
+			revokeCtx, cancel := detachedShutdownCtx()
+			defer cancel()
+			_ = client.AuthDelete(revokeCtx)
+		}
 		client.Close()
 		return fmt.Errorf(format, vals...)
 	}
@@ -104,21 +121,21 @@ func Resume(ctx context.Context, mgr *gpa.Manager, args ResumeArgs) (*Session, e
 		// here. Map those to ErrSessionExpired so the CLI clears the
 		// Keychain and re-prompts cleanly.
 		if isAuthExpired(err) {
-			return nil, closeAndWrap("%w: %v", ErrSessionExpired, err)
+			return nil, closeAndWrap(true, "%w: %v", ErrSessionExpired, err)
 		}
-		return nil, closeAndWrap("resume get user: %w", err)
+		return nil, closeAndWrap(false, "resume get user: %w", err)
 	}
 	addrs, err := client.GetAddresses(ctx)
 	if err != nil {
 		if isAuthExpired(err) {
-			return nil, closeAndWrap("%w: %v", ErrSessionExpired, err)
+			return nil, closeAndWrap(true, "%w: %v", ErrSessionExpired, err)
 		}
-		return nil, closeAndWrap("resume get addresses: %w", err)
+		return nil, closeAndWrap(false, "resume get addresses: %w", err)
 	}
 
 	userKR, addrKRs, err := gpa.Unlock(user, addrs, args.SaltedKeyPass.Bytes(), nil)
 	if err != nil {
-		return nil, closeAndWrap("resume unlock: %w — keystore blob may be stale, run `protonmcp login` again", err)
+		return nil, closeAndWrap(false, "resume unlock: %w — keystore blob may be stale, run `protonmcp login` again", err)
 	}
 
 	sess.User = user
@@ -139,19 +156,27 @@ func Resume(ctx context.Context, mgr *gpa.Manager, args ResumeArgs) (*Session, e
 //     resty.ResponseError — what /auth/v4/refresh actually returns
 //     when the token has been revoked by an AuthDelete call
 //
-// We treat any 4xx response from the refresh endpoint as "token
-// effectively expired — wipe and re-prompt"; only 5xx and network
-// errors leave the Keychain entry alone so they don't blow it away
-// on a transient outage.
+// Only 400 / 401 / 422 count — the same set the SDK itself treats as
+// "de-auth" on refresh, plus the classic 401. Everything else (429
+// rate limiting, 409, 5xx, network errors, …) is transient: it must
+// neither wipe the Keychain entry nor revoke the session, or an
+// outage would force a re-login.
 func isAuthExpired(err error) bool {
 	var apiErr *gpa.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status >= 400 && apiErr.Status < 500
+		return isAuthExpiredStatus(apiErr.Status)
 	}
 	var respErr *resty.ResponseError
 	if errors.As(err, &respErr) && respErr.Response != nil {
-		sc := respErr.Response.StatusCode()
-		return sc >= 400 && sc < 500
+		return isAuthExpiredStatus(respErr.Response.StatusCode())
+	}
+	return false
+}
+
+func isAuthExpiredStatus(sc int) bool {
+	switch sc {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusUnprocessableEntity:
+		return true
 	}
 	return false
 }
@@ -172,5 +197,6 @@ func newResumedSession(client *gpa.Client, args ResumeArgs) *Session {
 		// session's pass became 32 zero bytes the moment they returned,
 		// and the next OnAuthUpdate persisted that to the Keychain.
 		SaltedKeyPass: args.SaltedKeyPass.Clone(),
+		OnAuthUpdate:  args.OnAuthUpdate,
 	}
 }

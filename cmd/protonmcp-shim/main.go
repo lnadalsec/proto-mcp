@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -154,12 +155,43 @@ func defaultSocketPath() (string, error) {
 // We do this BEFORE returning so even though the process is about
 // to exit non-zero, the client gets one frame describing why.
 func emitDaemonUnavailableError(path string, dialErr error) {
-	msg := fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":null,"error":{"code":-32099,`+
-			`"message":"protonmcpd not running at %s — run `+
-			"`"+`protonmcp daemon start`+"`"+` or fall back to `+
-			"`"+`protonmcp serve-stdio`+"`"+`",`+
-			`"data":{"dial_error":%q}}}`+"\n",
-		path, dialErr.Error())
-	_, _ = os.Stdout.Write([]byte(msg))
+	_, _ = os.Stdout.Write(daemonUnavailableFrame(path, dialErr))
+}
+
+// daemonUnavailableFrame builds the NDJSON error frame with
+// encoding/json rather than string formatting: the socket path comes
+// from $HOME and may contain `"` or `\`, and Go's %q emits escapes
+// (\x00, \U0001F600, \a) that are not valid JSON — either would hand
+// the client an unparseable frame at the one moment it needs a clear
+// error.
+func daemonUnavailableFrame(path string, dialErr error) []byte {
+	type errData struct {
+		DialError string `json:"dial_error"`
+	}
+	type rpcError struct {
+		Code    int     `json:"code"`
+		Message string  `json:"message"`
+		Data    errData `json:"data"`
+	}
+	type frame struct {
+		JSONRPC string    `json:"jsonrpc"`
+		ID      *struct{} `json:"id"` // always null
+		Error   rpcError  `json:"error"`
+	}
+	f := frame{
+		JSONRPC: "2.0",
+		Error: rpcError{
+			Code: -32099,
+			Message: "protonmcpd not running at " + path +
+				" — run `protonmcp daemon start` or fall back to `protonmcp serve-stdio`",
+			Data: errData{DialError: dialErr.Error()},
+		},
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		// Unreachable for these field types; keep the client informed
+		// with a constant, known-valid frame anyway.
+		b = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32099,"message":"protonmcpd not running"}}`)
+	}
+	return append(b, '\n')
 }

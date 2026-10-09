@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"syscall"
 
@@ -67,9 +68,11 @@ func runPolicyReload(_ context.Context, args []string) error {
 	return nil
 }
 
-// runPolicyShow prints the currently-effective policy. Loads it the
-// same way serve-stdio does (default + user override) so users see
-// exactly what's in force.
+// runPolicyShow prints the merged policy (default + user override).
+// Entries that LOOSEN the defaults are flagged in a header: the daemon
+// only applies them after a Touch ID approval at load (policy.NewGated)
+// and keeps the defaults if that approval is refused, so they can't be
+// presented as unconditionally in force.
 func runPolicyShow(ctx context.Context, args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("policy show takes no arguments; got %v", args)
@@ -78,6 +81,13 @@ func runPolicyShow(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	return writePolicyShow(ctx, os.Stdout, overridePath)
+}
+
+// writePolicyShow renders `policy show` for overridePath to w. The
+// header is YAML comments so the output stays valid YAML.
+func writePolicyShow(ctx context.Context, w io.Writer, overridePath string) error {
+	// Display-only, ungated: shows the policy as it is once approved.
 	e, err := policy.New(ctx, overridePath, nil)
 	if err != nil {
 		return err
@@ -86,8 +96,22 @@ func runPolicyShow(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, _ = os.Stdout.Write(out)
-	return nil
+	changes, lerr := policy.Loosenings(overridePath)
+	switch {
+	case lerr != nil:
+		_, _ = fmt.Fprintf(w, "# NOTE: the override %s is not applied (%v);\n"+
+			"# the embedded defaults below are what the daemon runs.\n", overridePath, lerr)
+	case len(changes) > 0:
+		_, _ = fmt.Fprintf(w, "# WARNING: the override %s LOOSENS the default policy:\n", overridePath)
+		for _, c := range changes {
+			_, _ = fmt.Fprintf(w, "#   - %s\n", c)
+		}
+		_, _ = fmt.Fprint(w, "# The daemon applies these only after a Touch ID approval when it loads\n"+
+			"# (or reloads) the policy. If that approval was refused, the daemon runs\n"+
+			"# the embedded defaults for the WHOLE override, not the policy below.\n")
+	}
+	_, err = w.Write(out)
+	return err
 }
 
 // runPolicyValidate parses a candidate YAML file the same way the

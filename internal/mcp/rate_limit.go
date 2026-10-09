@@ -6,9 +6,38 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
 )
 
-// rateLimiter is a token-bucket store keyed by (tool, pid).
+// rateLimitKey is the bucket key for a tool call: tool name + the
+// connecting user's UID. It used to be tool + shim PID, which gave
+// every new Claude client / shim process (a fresh PID) a fresh full
+// budget — the limit was trivially bypassed by reconnecting — and
+// left one persisted row per PID forever. All of a user's clients now
+// share one budget per tool, which is what the policy's "20/hour"
+// means. The "uid:" marker keeps these keys disjoint from legacy
+// "tool|<pid>" rows, which age out via the startup prune.
+func rateLimitKey(tool string, c caller.Caller) string {
+	return tool + "|uid:" + strconv.Itoa(c.UID)
+}
+
+// staleBucketAge is how long after its last refill a bucket is
+// guaranteed to be full again: the longest refill unit
+// parseLimitSpec accepts is one day, so after that the bucket is
+// indistinguishable from a fresh one and can be dropped (in memory
+// and on disk) without granting any extra budget. Two days of margin.
+const staleBucketAge = 48 * time.Hour
+
+// RateLimitPruner is optionally implemented by a RateLimitPersister
+// that can delete stale rows. setPersister calls it at startup so the
+// table doesn't accumulate dead keys (e.g. legacy per-PID buckets).
+type RateLimitPruner interface {
+	PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// rateLimiter is a token-bucket store keyed by (tool, uid) — see
+// rateLimitKey.
 //
 // Phase 5/D shipped the in-memory version (one bucket per key, lost
 // on restart). Phase 6/E adds persistence via a pluggable
@@ -75,11 +104,19 @@ func (r *rateLimiter) setPersister(p RateLimitPersister) error {
 	if p == nil {
 		return nil
 	}
+	cutoff := r.now().Add(-staleBucketAge)
+	if pr, ok := p.(RateLimitPruner); ok {
+		// Best-effort disk hygiene; a failure only leaves dead rows.
+		_, _ = pr.PruneOlderThan(context.Background(), cutoff)
+	}
 	persisted, err := p.LoadAll(context.Background())
 	if err != nil {
 		return err
 	}
 	for key, pb := range persisted {
+		if pb.LastRefill.Before(cutoff) {
+			continue // fully refilled by now: same as no bucket
+		}
 		capacity, perSec, ok := parseLimitSpec(pb.LimitSpec)
 		if !ok {
 			continue
@@ -99,8 +136,8 @@ func (r *rateLimiter) setPersister(p RateLimitPersister) error {
 // (false, "reason") if it should be denied. limitSpec is the
 // policy's rate_limit string ("20/hour"); empty disables the
 // check. key uniquely identifies the bucket — middleware passes
-// (tool || pid) so concurrent Claude Desktop sessions don't share
-// a budget.
+// rateLimitKey(tool, caller), so every client of the same user
+// shares one budget per tool.
 //
 // Tokens refill linearly between calls. A burst of N consecutive
 // calls within milliseconds drains the bucket; the (N+1)th waits

@@ -38,12 +38,12 @@ Fields:
                            subject, etc.). Used as the localized reason
                            in the Touch ID sheet too.
 - `caller`    (optional) — appended to the alert as "Requested by: ...".
-- `confirm`   (optional) — if true, show NSAlert with Send/Cancel BEFORE
+- `confirm`   (optional) — if true, show NSAlert (title + full body, scrollable) with Continue/Cancel BEFORE
                            the biometric prompt. False / absent skips
                            straight to Touch ID.
 
 Exit codes:
-- `0` — user approved (clicked Send, then biometric succeeded).
+- `0` — user approved (clicked Continue when confirm was set, then biometric succeeded).
 - `1` — user declined OR biometric failed OR no Touch ID hardware /
         Touch ID disabled in System Settings.
 - `2` — malformed stdin.
@@ -51,7 +51,7 @@ Exit codes:
 ## Manual test checklist
 
 1. `echo '{"title":"Test","body":"This is a test","confirm":false}' | ./protonmcp-touchid && echo OK` — Touch ID sheet appears; touch sensor approves with exit 0.
-2. Add `"confirm":true` — NSAlert appears first with the body text; click Send, then biometric.
+2. Add `"confirm":true` — NSAlert appears first with the title and full body text; click Continue, then biometric.
 3. Click Cancel on the alert — exits with 1 immediately (no biometric).
 4. Pipe garbage to stdin: `echo 'xyz' | ./protonmcp-touchid; echo $?` — exits 2.
 5. With Touch ID disabled in System Settings → Touch ID & Password → check biometric-not-available path returns 1 with a useful stderr message.

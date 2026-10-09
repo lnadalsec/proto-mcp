@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -432,6 +431,3 @@ func TestMiddlewareJSONRPCErrorBubbles(t *testing.T) {
 		t.Errorf("code = %v, want %d", errObj["code"], CodeInvalidParams)
 	}
 }
-
-// _ unused — kept so the import isn't dropped if errors usage changes.
-var _ = errors.New

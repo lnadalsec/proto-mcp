@@ -111,9 +111,11 @@ container.
 
 ## What gets signed
 
-All four executables get the SAME entitlements and Team ID, so
-library validation works in our favor (the helpers can only be
-launched by a binary signed by the same team):
+All five executables are signed by the same Team ID with the same
+(empty) hardened-runtime entitlements in the bare-binary flow. In the
+D37 `.app` flow (`scripts/build-app.sh`), only `protonmcp` and
+`protonmcpd` — the binaries that read/write the Keychain — also get
+`keychain-access-groups`; the shim and the Swift helpers do not:
 
 | Binary | Path | Type |
 |---|---|---|
@@ -151,9 +153,13 @@ Read the submission log:
 ```sh
 xcrun notarytool log <submission-id> --keychain-profile protonmcp-notary
 ```
-The most common cause is missing entitlements (we don't request
-hardened runtime) or hard-linked symbols (we use the Go runtime's
-mmap which needs `allow-unsigned-executable-memory`).
+The most common causes are a binary signed without the hardened
+runtime (`--options=runtime`) or without a secure timestamp. The
+entitlements plist is intentionally empty: Go and the Swift helpers
+need no hardened-runtime exception (`allow-unsigned-executable-memory`
+was removed — re-add an exception only with a crash log proving it is
+required). `scripts/notarize.sh` fails the build on any status other
+than `Accepted` and prints the `notarytool log` command to run.
 
 **Gatekeeper still complains after notarization**
 Confirm the staple worked:

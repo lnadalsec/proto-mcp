@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 )
@@ -20,7 +18,7 @@ type RateLimitState struct {
 }
 
 // LoadRateLimitState returns every persisted bucket, keyed by the
-// composite (tool|pid) string the in-memory limiter uses.
+// composite ("tool|uid:N") string the in-memory limiter uses.
 // Returns nil + nil if the table is empty.
 func (s *Store) LoadRateLimitState(ctx context.Context) (map[string]RateLimitState, error) {
 	rows, err := s.DB.QueryContext(ctx, `
@@ -84,12 +82,3 @@ func (s *Store) PruneRateLimitOlderThan(ctx context.Context, cutoff time.Time) (
 	n, _ := res.RowsAffected()
 	return n, nil
 }
-
-// Used to surface "no buckets persisted yet" cleanly. Currently
-// not returned anywhere — Load returns an empty map for that case —
-// kept here for future API consumers.
-var ErrNoBuckets = errors.New("store: no persisted rate-limit buckets")
-
-// sql.NullInt64 unused; placeholder so the import stays referenced
-// if a future column ends up nullable.
-var _ = sql.NullInt64{}

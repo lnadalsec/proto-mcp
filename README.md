@@ -45,7 +45,7 @@ tap is the line between "Claude drafted it" and "Claude sent it."
 ## Quickstart
 
 ```sh
-brew tap just-an-oldsalt/proto-mcp
+brew tap lnadalsec/proto-mcp
 brew install --cask proto-mcp
 
 protonmcp setup
@@ -189,7 +189,7 @@ Requires macOS 13+, [Go 1.26.6+](https://go.dev/dl/), and Xcode Command
 Line Tools (for `swiftc`).
 
 ```sh
-git clone https://github.com/just-an-oldsalt/proto-mcp.git
+git clone https://github.com/lnadalsec/proto-mcp.git
 cd proto-mcp
 make all                          # builds bin/* + the Swift helpers
 ./bin/protonmcp setup

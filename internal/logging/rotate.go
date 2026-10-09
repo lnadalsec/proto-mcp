@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // DefaultRotateBytes is the default size threshold at which a log
@@ -18,6 +19,13 @@ const DefaultRotateBytes int64 = 50 << 20
 // directory naming is grep-stable. 10 generations × 50 MiB = 500 MiB
 // per log channel ceiling.
 const DefaultMaxGenerations = 10
+
+// rotateRetryInterval is how long Write waits after a failed
+// automatic rotation before trying again. Meanwhile records keep
+// going to the current file (which grows past maxBytes): losing
+// daemon logs because a rename failed is worse than an oversized
+// file.
+const rotateRetryInterval = time.Minute
 
 // Rotator wraps an *os.File-like target with a "rotate when size
 // exceeds threshold" behavior. Implements io.Writer + io.Closer so
@@ -43,15 +51,21 @@ type Rotator struct {
 	f      *os.File
 	size   int64
 	closed bool
+
+	// retryAt holds back automatic rotation after a failure (see
+	// rotateRetryInterval). Zero means "no pending failure".
+	retryAt time.Time
+	// now is the clock; overridable in tests.
+	now func() time.Time
 }
 
 // NewRotator opens path for append (creating if needed) and returns
 // a Rotator. maxBytes ≤ 0 → DefaultRotateBytes. maxGenerations ≤ 0 →
 // DefaultMaxGenerations.
 //
-// The directory must already exist. Permissions on the file mirror
-// what os.OpenFile would set (umask applies); the daemon's main()
-// installs a 0o077 umask early so log files land at 0o600.
+// The directory must already exist. The file is created 0o600
+// (further restricted by the umask; both binaries install a 0o077
+// umask early in main()).
 func NewRotator(path string, maxBytes int64, maxGenerations int) (*Rotator, error) {
 	if maxBytes <= 0 {
 		maxBytes = DefaultRotateBytes
@@ -63,41 +77,53 @@ func NewRotator(path string, maxBytes int64, maxGenerations int) (*Rotator, erro
 		path:           path,
 		maxBytes:       maxBytes,
 		maxGenerations: maxGenerations,
+		now:            time.Now,
 	}
-	if err := r.openCurrent(); err != nil {
+	f, size, err := r.openCurrent()
+	if err != nil {
 		return nil, err
 	}
+	r.f, r.size = f, size
 	return r, nil
 }
 
-func (r *Rotator) openCurrent() error {
+// openCurrent opens (creating if needed) r.path for append and
+// returns the file with its current size. It does not touch r.f, so a
+// failed reopen during rotation leaves the previous file usable.
+func (r *Rotator) openCurrent() (*os.File, int64, error) {
 	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return fmt.Errorf("rotator: open %s: %w", r.path, err)
+		return nil, 0, fmt.Errorf("rotator: open %s: %w", r.path, err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
-		return fmt.Errorf("rotator: stat %s: %w", r.path, err)
+		return nil, 0, fmt.Errorf("rotator: stat %s: %w", r.path, err)
 	}
-	r.f = f
-	r.size = info.Size()
-	return nil
+	return f, info.Size(), nil
 }
 
 // Write writes p to the current file. If the post-write size would
-// cross maxBytes, the file is closed, rotated, and a new current
-// file opened BEFORE the write — so a single record never spans
-// two generations.
+// cross maxBytes, the file is rotated and a new current file opened
+// BEFORE the write — so a single record never spans two generations.
+//
+// Two exceptions keep logging alive and history intact:
+//   - an empty current file is never rotated: a single record larger
+//     than maxBytes is written as-is instead of pushing an empty
+//     generation into the history (evicting the oldest real one);
+//   - a failed rotation is not fatal: the record is appended to the
+//     current file and rotation is retried after rotateRetryInterval.
 func (r *Rotator) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return 0, os.ErrClosed
 	}
-	if r.size+int64(len(p)) > r.maxBytes {
+	if r.size > 0 && r.size+int64(len(p)) > r.maxBytes && !r.now().Before(r.retryAt) {
 		if err := r.rotateLocked(); err != nil {
-			return 0, err
+			r.retryAt = r.now().Add(rotateRetryInterval)
+		} else {
+			r.retryAt = time.Time{}
 		}
 	}
 	n, err := r.f.Write(p)
@@ -127,6 +153,9 @@ func (r *Rotator) Close() error {
 // writer (e.g. by a separate logrotate-style cron job). Mostly here
 // so the daemon can respond to a "rotate now" admin signal in a
 // future phase; not wired into any signal handler today.
+//
+// On error the Rotator stays usable: writes keep going to the
+// current file.
 func (r *Rotator) Rotate() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -148,15 +177,12 @@ func (r *Rotator) Rotate() error {
 //
 // Each rename is best-effort: a missing source (because the file
 // hasn't accumulated that many generations yet) is silently skipped.
-// A failed rename of the current file fails the whole rotation —
-// without that move we'd append to the same file we just decided was
-// full.
+// A failed rename of the current file fails the whole rotation.
+//
+// Failure safety: the current file stays open (renaming an open file
+// is fine on Unix) until its replacement is open, so on ANY error r.f
+// still points at a usable file and the caller can keep writing.
 func (r *Rotator) rotateLocked() error {
-	if err := r.f.Close(); err != nil {
-		return fmt.Errorf("rotator: close current: %w", err)
-	}
-	r.f = nil
-
 	// Drop the oldest if it exists.
 	oldest := r.generationPath(r.maxGenerations)
 	_ = os.Remove(oldest) // ignore "not exists"
@@ -178,7 +204,19 @@ func (r *Rotator) rotateLocked() error {
 		return fmt.Errorf("rotator: rename current %s: %w", r.path, err)
 	}
 
-	return r.openCurrent()
+	f, size, err := r.openCurrent()
+	if err != nil {
+		// Put the still-open current file back under its name so the
+		// next attempt (and anyone tailing the log) find it there.
+		_ = os.Rename(r.generationPath(1), r.path)
+		return err
+	}
+	old := r.f
+	r.f, r.size = f, size
+	if cerr := old.Close(); cerr != nil {
+		return fmt.Errorf("rotator: close previous: %w", cerr)
+	}
+	return nil
 }
 
 func (r *Rotator) generationPath(i int) string {

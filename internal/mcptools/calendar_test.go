@@ -127,11 +127,13 @@ func TestCalendarReadEventTool_CacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	detail, ok := res.StructuredContent.(*protonclient.CalendarEventDetail)
-	if !ok {
-		t.Fatalf("result type = %T", res.StructuredContent)
+	var detail protonclient.CalendarEventDetail
+	if err := json.Unmarshal([]byte(resultText(res)), &detail); err != nil {
+		t.Fatalf("decode result: %v", err)
 	}
-	if detail.Summary != "Review" || detail.Description != "quarterly" {
+	// The description is fenced like an email body (untrusted.go).
+	if detail.Summary != "Review" || !strings.HasPrefix(detail.Description, untrustedDescBegin) ||
+		!strings.Contains(detail.Description, "\nquarterly\n") {
 		t.Errorf("detail = %+v", detail)
 	}
 	if len(detail.Attendees) != 1 || detail.Attendees[0].Email != "bob@example.com" {

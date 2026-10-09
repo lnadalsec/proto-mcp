@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -136,36 +137,115 @@ func installInto(t clientTarget, cmdPath string, cmdArgs []string, dryRun bool) 
 		return err
 	}
 
-	cfg, err := loadClaudeDesktopConfig(cfgPath)
-	if err != nil {
-		return err
-	}
-	if err := cfg.setServer("protonmcp", mcpServerEntry{
-		Type:    "stdio",
-		Command: cmdPath,
-		Args:    cmdArgs,
-	}); err != nil {
-		return err
-	}
+	for attempt := 1; ; attempt++ {
+		cfg, snap, err := loadConfigSnapshot(cfgPath)
+		if err != nil {
+			return err
+		}
+		if err := cfg.setServer("protonmcp", mcpServerEntry{
+			Type:    "stdio",
+			Command: cmdPath,
+			Args:    cmdArgs,
+		}); err != nil {
+			return err
+		}
 
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	if dryRun {
-		fmt.Printf("# Would write to %s (%s)\n", cfgPath, t.name)
-		fmt.Println(string(out))
+		out, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal config: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("# Would write to %s (%s)\n", cfgPath, t.name)
+			fmt.Println(string(out))
+			return nil
+		}
+
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+			return fmt.Errorf("create config dir: %w", err)
+		}
+		err = writeConfigGuarded(cfgPath, append(out, '\n'), &snap)
+		if errors.Is(err, errConfigChanged) && attempt < configWriteAttempts {
+			continue // re-read the client's fresh state and re-apply
+		}
+		if err != nil {
+			return fmt.Errorf("write config: %w", err)
+		}
+		fmt.Printf("Installed protonmcp into %s config: %s\n", t.name, cfgPath)
 		return nil
 	}
+}
 
-	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
+// configWriteAttempts bounds the read-modify-write loop when the
+// client rewrites its config under us. Claude Code rewrites
+// ~/.claude.json constantly while running; one retry absorbs an
+// unlucky collision, a second collision means it is busy and the user
+// should close it rather than us spinning.
+const configWriteAttempts = 2
+
+// errConfigChanged reports that the config was modified by someone
+// else between our read and our rename. Replacing it anyway would
+// silently discard that write (Claude Code project state, typically).
+var errConfigChanged = errors.New("config file was modified by another process while it was being updated " +
+	"(is Claude running?); close it and retry")
+
+// configSnapshot fingerprints a config file as read, so the write path
+// can tell whether someone else rewrote it in the meantime.
+type configSnapshot struct {
+	exists  bool
+	modTime time.Time
+	size    int64
+	sum     [sha256.Size]byte
+}
+
+func (s configSnapshot) equal(o configSnapshot) bool {
+	return s.exists == o.exists && s.modTime.Equal(o.modTime) && s.size == o.size && s.sum == o.sum
+}
+
+// takeConfigSnapshot reads path (following symlinks) and fingerprints
+// it. A missing file is a valid snapshot with exists=false.
+func takeConfigSnapshot(path string) (configSnapshot, []byte, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return configSnapshot{}, nil, nil
 	}
-	if err := writeConfigAtomic(cfgPath, append(out, '\n')); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err != nil {
+		return configSnapshot{}, nil, fmt.Errorf("read config: %w", err)
 	}
-	fmt.Printf("Installed protonmcp into %s config: %s\n", t.name, cfgPath)
-	return nil
+	info, err := os.Stat(path)
+	if err != nil {
+		return configSnapshot{}, nil, fmt.Errorf("stat config: %w", err)
+	}
+	return configSnapshot{
+		exists:  true,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		sum:     sha256.Sum256(data),
+	}, data, nil
+}
+
+// resolveConfigTarget returns the file a write to path must actually
+// replace. Dotfiles setups commonly make ~/.claude.json a symlink into
+// a git-managed directory; renaming a temp file over the symlink itself
+// would turn it into a regular file and silently detach it from the
+// repo. A symlink whose target cannot be resolved is refused rather
+// than clobbered.
+func resolveConfigTarget(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return path, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("%s is a symlink whose target cannot be resolved (%w); "+
+			"fix or remove the link, then retry", path, err)
+	}
+	return target, nil
 }
 
 // writeConfigAtomic replaces path's contents without ever leaving it
@@ -180,12 +260,34 @@ func installInto(t clientTarget, cmdPath string, cmdArgs []string, dryRun bool) 
 //
 // Write to a temp file in the same directory (same filesystem, so the
 // rename is atomic), fsync it, keep the previous contents as a
-// timestamped backup (see backupConfig), then rename over the target. A reader either sees the old file or the
-// new one, never a partial.
+// timestamped backup (see backupConfig), then rename over the target.
+// A reader either sees the old file or the new one, never a partial.
+//
+// If path is a symlink, the file it points to is the one replaced (the
+// temp file is created next to it), so the link survives.
 func writeConfigAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
+	return writeConfigGuarded(path, data, nil)
+}
 
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+// beforeConfigRename is a test seam: called after the temp file is
+// written and before the concurrent-modification check, to simulate
+// the client rewriting its config at the worst moment.
+var beforeConfigRename func(target string)
+
+// writeConfigGuarded is writeConfigAtomic plus an optimistic-concurrency
+// check: when expect is non-nil, the target is re-read immediately
+// before the rename and errConfigChanged is returned (nothing replaced)
+// if it no longer matches the snapshot the caller built data from.
+// What remains is the window between that re-read and rename(2) —
+// microseconds instead of the whole read-modify-write.
+func writeConfigGuarded(path string, data []byte, expect *configSnapshot) error {
+	target, err := resolveConfigTarget(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(target)
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+"-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -213,13 +315,26 @@ func writeConfigAtomic(path string, data []byte) error {
 		return fmt.Errorf("close temp file: %w", err)
 	}
 
+	if beforeConfigRename != nil {
+		beforeConfigRename(target)
+	}
+	if expect != nil {
+		cur, _, err := takeConfigSnapshot(target)
+		if err != nil {
+			return err
+		}
+		if !cur.equal(*expect) {
+			return errConfigChanged
+		}
+	}
+
 	// Best-effort backup of what we're about to replace. Never fatal —
 	// failing to back up a file is not a reason to refuse to install,
 	// and the atomic rename already guarantees we don't corrupt it.
 	backupConfig(path)
 
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace %s: %w", path, err)
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("replace %s: %w", target, err)
 	}
 	return nil
 }
@@ -300,30 +415,40 @@ func uninstallFrom(t clientTarget) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := loadClaudeDesktopConfig(cfgPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	for attempt := 1; ; attempt++ {
+		// loadClaudeDesktopConfig maps a missing file to an empty
+		// config, so a missing-file check against its error could never
+		// fire; the snapshot says explicitly whether the file exists.
+		cfg, snap, err := loadConfigSnapshot(cfgPath)
+		if err != nil {
+			return err
+		}
+		if !snap.exists {
 			fmt.Printf("%s: config does not exist — nothing to uninstall.\n", t.name)
 			return nil
 		}
-		return err
-	}
-	if _, ok := cfg.MCPServers["protonmcp"]; !ok {
-		fmt.Printf("%s: protonmcp not registered — nothing to do.\n", t.name)
+		if _, ok := cfg.MCPServers["protonmcp"]; !ok {
+			fmt.Printf("%s: protonmcp not registered — nothing to do.\n", t.name)
+			return nil
+		}
+		delete(cfg.MCPServers, "protonmcp")
+		out, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return err
+		}
+		// Same atomic, symlink-preserving, concurrency-checked path as
+		// install — uninstall rewrites the whole file too, so it
+		// carries the identical risk to the user's other state.
+		err = writeConfigGuarded(cfgPath, append(out, '\n'), &snap)
+		if errors.Is(err, errConfigChanged) && attempt < configWriteAttempts {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Removed protonmcp from %s: %s\n", t.name, cfgPath)
 		return nil
 	}
-	delete(cfg.MCPServers, "protonmcp")
-	out, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Same atomic path as install — uninstall rewrites the whole file
-	// too, so it carries the identical risk to the user's other state.
-	if err := writeConfigAtomic(cfgPath, append(out, '\n')); err != nil {
-		return err
-	}
-	fmt.Printf("Removed protonmcp from %s: %s\n", t.name, cfgPath)
-	return nil
 }
 
 func pickTargets(client string) ([]clientTarget, error) {
@@ -454,20 +579,26 @@ func claudeCodeConfigPath() (string, error) {
 	return filepath.Join(home, ".claude.json"), nil
 }
 
+// loadClaudeDesktopConfig reads and parses path. A missing or empty
+// file yields an empty config and no error.
 func loadClaudeDesktopConfig(path string) (claudeDesktopConfig, error) {
+	cfg, _, err := loadConfigSnapshot(path)
+	return cfg, err
+}
+
+// loadConfigSnapshot is loadClaudeDesktopConfig plus the fingerprint
+// of the bytes it parsed, for writeConfigGuarded.
+func loadConfigSnapshot(path string) (claudeDesktopConfig, configSnapshot, error) {
 	var cfg claudeDesktopConfig
-	data, err := os.ReadFile(path)
+	snap, data, err := takeConfigSnapshot(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
-		}
-		return cfg, fmt.Errorf("read config: %w", err)
+		return cfg, snap, err
 	}
 	if len(data) == 0 {
-		return cfg, nil
+		return cfg, snap, nil
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parse config: %w", err)
+		return cfg, snap, fmt.Errorf("parse config: %w", err)
 	}
-	return cfg, nil
+	return cfg, snap, nil
 }

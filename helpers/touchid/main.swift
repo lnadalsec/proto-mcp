@@ -2,23 +2,30 @@
 //
 // Spec:
 //   - Read one JSON object from stdin (single line or multi-line).
+//   - If `confirm` is true, show an NSAlert FIRST: `title` as the
+//     headline and the full literal `body` (+ caller) in a scrollable,
+//     selectable text view, with Continue / Cancel. Cancel (or Esc)
+//     exits 1 without ever reaching Touch ID.
 //   - Run LAContext.evaluatePolicy(.deviceOwnerAuthentication) with
 //     the body text (plus caller info, when present) as the
-//     localizedReason. The biometric IS the confirmation — no
-//     separate NSAlert step.
+//     localizedReason.
 //   - Exit 0 on biometric/password success, 1 on deny/cancel/
 //     auth-fail, 2 on stdin parse error.
 //
-// History: earlier versions of this helper showed an NSAlert FIRST
-// when policy had confirm:true, then the Touch ID prompt — same
-// body text shown twice with one extra click. Collapsed to a single
-// prompt; the `confirm` field on the request is now accepted for
-// backwards compat but does not gate a second dialog.
+// Why the alert exists when confirm is set: the Touch ID sheet
+// renders localizedReason in a small, truncating label — long
+// recipient lists or subjects get cut off, so the user would be
+// approving details they cannot fully see. internal/policy's
+// default.yaml promises that confirm:true shows the literal operation
+// details before Touch ID; an earlier version of this helper had
+// collapsed that into the biometric prompt and silently ignored both
+// `confirm` and `title`.
 //
 // Distribution: ad-hoc signed by swiftc on the dev machine. Phase 7
 // adds Developer ID signing + notarization + NSFaceIDUsageDescription
 // in an Info.plist when we bundle this as a .app.
 
+import AppKit
 import Foundation
 import LocalAuthentication
 
@@ -59,6 +66,74 @@ guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &laError) else {
 var reason = req.body
 if let caller = req.caller, !caller.isEmpty {
     reason += "\n\nRequested by: \(caller)"
+}
+
+// confirmWithAlert shows the literal request in a modal NSAlert and
+// returns true only if the user explicitly clicks Continue.
+//
+// The body goes into a read-only, selectable NSTextView inside a
+// scroll view rather than informativeText: informativeText grows the
+// alert without bound and a long recipient list would push the
+// buttons off-screen, while a fixed-height scroll view keeps every
+// byte reachable. The text view is not editable, so what the user
+// reads is exactly what the daemon sent.
+func confirmWithAlert(title: String, details: String) -> Bool {
+    let app = NSApplication.shared
+    // No Dock icon / menu bar, but allowed to own a key window.
+    app.setActivationPolicy(.accessory)
+    app.activate(ignoringOtherApps: true)
+
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = title.isEmpty ? "proto-mcp approval" : title
+    alert.informativeText = "Review the details below. Touch ID (or your password) is requested next."
+
+    let width: CGFloat = 460
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.isRichText = false
+    textView.drawsBackground = false
+    textView.font = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    textView.textContainerInset = NSSize(width: 4, height: 4)
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.autoresizingMask = [.width]
+    textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+    textView.string = details
+
+    // Size to content, capped so long bodies scroll instead of growing
+    // the alert past the screen.
+    var height: CGFloat = 60
+    if let container = textView.textContainer, let layout = textView.layoutManager {
+        layout.ensureLayout(for: container)
+        height = layout.usedRect(for: container).height + 2 * textView.textContainerInset.height
+    }
+    height = min(max(height, 60), 280)
+
+    let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+    scroll.hasVerticalScroller = true
+    scroll.hasHorizontalScroller = false
+    scroll.autohidesScrollers = true
+    scroll.borderType = .bezelBorder
+    scroll.documentView = textView
+    alert.accessoryView = scroll
+
+    // First button is the default (Return). Cancel answers Esc.
+    alert.addButton(withTitle: "Continue")
+    let cancel = alert.addButton(withTitle: "Cancel")
+    cancel.keyEquivalent = "\u{1b}"
+
+    alert.window.level = .modalPanel
+    return alert.runModal() == .alertFirstButtonReturn
+}
+
+if req.confirm == true {
+    guard confirmWithAlert(title: req.title, details: reason) else {
+        FileHandle.standardError.write(Data("declined at confirmation dialog\n".utf8))
+        exit(1)
+    }
 }
 
 let sem = DispatchSemaphore(value: 0)

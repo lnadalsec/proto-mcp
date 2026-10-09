@@ -41,7 +41,12 @@ Plus, around the binaries themselves:
 - **Hardened-runtime, Developer-ID-signed, Apple-notarized** binaries.
   Gatekeeper accepts them with no "unidentified developer" dialog.
 - **SHA-256 binary integrity check** at daemon startup. If `protonmcpd`
-  was swapped between install and launch, the daemon refuses to start.
+  was swapped between install and launch, the daemon refuses to start —
+  unless the new binary carries a valid Developer ID signature from our
+  team (a `brew upgrade`) **and** its embedded release version is not
+  older than the last version the daemon accepted (anti-downgrade: every
+  old, possibly vulnerable, release is validly signed too). See the
+  same-user limit under *Out of scope* below.
 - **Peer-credential checks** (`SO_PEERCRED` / `LOCAL_PEERPID`) on every
   socket connection; cross-UID connections are refused and the real
   connecting PID/UID is recorded in the audit log.
@@ -163,6 +168,18 @@ anything a sender chose to put in it.
   ships. A signed binary carrying that entitlement is killed by the
   kernel at launch. The application-layer Touch ID gate is the practical
   security boundary, by design.
+- **The binary integrity records are writable by you.** The recorded
+  hash (`~/Library/Application Support/protonmcp/expected_sha256`) and
+  the anti-downgrade floor (`accepted_version` next to it) belong to
+  the same user the daemon runs as. They stop a binary being swapped
+  *without touching the records* — an unsigned build, or an older signed
+  release dropped over the installed one. They do not stop a process
+  already running as you: it can rewrite both files (or run
+  `protonmcp daemon install`) and the daemon will accept whatever they
+  name. A root-owned or Keychain-anchored record would be needed for
+  that, and code running as you is outside this model anyway (next
+  item). A deliberate downgrade is done the same way: install the older
+  release, then `protonmcp daemon install`.
 - **A local account already compromised.** Everything runs as your user;
   malware already executing as you can read the SQLite mirror, the audit
   log, and staged attachments. proto-mcp is not a defense against code

@@ -295,12 +295,11 @@ $(DIST_ZIP): sign
 
 .PHONY: notarize
 notarize: $(DIST_ZIP)
-	@echo "submitting $(DIST_ZIP) to notarytool (profile: $(NOTARY_PROFILE))…"
-	xcrun notarytool submit $(DIST_ZIP) \
-		--keychain-profile $(NOTARY_PROFILE) \
-		--wait
+	@# scripts/notarize.sh fails unless Apple returns status Accepted;
+	@# `notarytool submit --wait` alone exits 0 on Invalid too.
+	./scripts/notarize.sh $(DIST_ZIP) $(NOTARY_PROFILE)
 	@echo ""
-	@echo "Notarization registered with Apple."
+	@echo "Notarization accepted by Apple."
 	@echo ""
 	@echo "Stapling skipped: bare Mach-O CLI binaries cannot be"
 	@echo "stapled (error 73). Gatekeeper looks up the notarization"
@@ -330,7 +329,8 @@ release:
 	./scripts/release.sh "$$VERSION"
 
 # Bootstrap or update the Homebrew tap repo
-# (github.com/just-an-oldsalt/homebrew-proto-mcp). Without args,
+# (github.com/$PROTO_MCP_OWNER/homebrew-proto-mcp, owner defaulting to
+# lnadalsec — see scripts/distribution.sh). Without args,
 # creates the tap repo (if missing) and pushes a placeholder cask
 # so `brew tap` succeeds. With VERSION + SHA256, updates the cask
 # to point at a real release. See scripts/bootstrap-tap.sh.

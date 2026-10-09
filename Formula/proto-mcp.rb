@@ -7,7 +7,7 @@
 # contract.
 #
 # Install:
-#   brew tap just-an-oldsalt/proto-mcp
+#   brew tap lnadalsec/proto-mcp
 #   brew install --cask proto-mcp
 #
 # Cask token is `proto-mcp` (with hyphen) deliberately — keeps
@@ -21,10 +21,10 @@ cask "proto-mcp" do
   version "0.0.0"  # release.sh replaces on tag (e.g. "1.0.0")
   sha256 :no_check # release.sh replaces with the artifact sha256
 
-  url "https://github.com/just-an-oldsalt/proto-mcp/releases/download/v#{version}/proto-mcp-#{version}.tar.gz"
+  url "https://github.com/lnadalsec/proto-mcp/releases/download/v#{version}/proto-mcp-#{version}.tar.gz"
   name "proto-mcp"
   desc "Local macOS MCP server bridging Proton Mail to Claude"
-  homepage "https://github.com/just-an-oldsalt/proto-mcp"
+  homepage "https://github.com/lnadalsec/proto-mcp"
 
   depends_on macos: :ventura  # ">= Ventura"; bare symbol is Homebrew's required form (the ">= :ventura" string is deprecated)
   # No arch constraint: the tarball ships universal (arm64 + x86_64)
@@ -87,6 +87,6 @@ cask "proto-mcp" do
 
       protonmcp daemon restart
 
-    See https://github.com/just-an-oldsalt/proto-mcp for full docs.
+    See https://github.com/lnadalsec/proto-mcp for full docs.
   CAVEATS
 end

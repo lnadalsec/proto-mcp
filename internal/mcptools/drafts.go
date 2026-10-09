@@ -357,9 +357,9 @@ func draftUpdatePromptBody(deps Deps, current gpa.Message, plan draftUpdatePlan,
 	parts := []string{"Edit draft " + capField(current.ID, promptNameMaxRunes) +
 		" (from " + joinAddrs(addressStrings([]*mail.Address{t.Sender})) + ")"}
 	parts = append(parts, recipientLines(
-		joinAddrs(addressStrings(t.ToList)),
-		joinAddrs(addressStrings(t.CCList)),
-		joinAddrs(addressStrings(t.BCCList)),
+		addressStrings(t.ToList),
+		addressStrings(t.CCList),
+		addressStrings(t.BCCList),
 	)...)
 	before := [3][]*mail.Address{current.ToList, current.CCList, current.BCCList}
 	after := [3][]*mail.Address{t.ToList, t.CCList, t.BCCList}

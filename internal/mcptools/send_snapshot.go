@@ -142,9 +142,9 @@ func draftPromptSnapshot(deps Deps) func(context.Context, json.RawMessage) (stri
 func draftPromptBody(d gpa.Message, plainBody string) string {
 	parts := []string{"Send draft " + capField(d.ID, promptNameMaxRunes)}
 	parts = append(parts, recipientLines(
-		joinAddrs(addressStrings(d.ToList)),
-		joinAddrs(addressStrings(d.CCList)),
-		joinAddrs(addressStrings(d.BCCList)),
+		addressStrings(d.ToList),
+		addressStrings(d.CCList),
+		addressStrings(d.BCCList),
 	)...)
 	parts = append(parts, "Subject: "+capField(d.Subject, promptSubjectMaxRunes))
 	parts = append(parts, bodyExcerptLine(plainBody, string(d.MIMEType)))
@@ -155,10 +155,19 @@ func draftPromptBody(d gpa.Message, plainBody string) string {
 }
 
 // recipientLines renders the To / CC / BCC lines of a send dialog from
-// already-joined bare-address lists. All three always appear, "(none)"
-// when empty, so the user can see there is no BCC.
-func recipientLines(to, cc, bcc string) []string {
-	return []string{"To: " + orNone(to), "CC: " + orNone(cc), "BCC: " + orNone(bcc)}
+// bare-address lists. All three always appear, "(none)" when empty, so
+// the user can see there is no BCC. A warning line follows when any
+// address carries non-ASCII or hidden characters (recipientWarning).
+func recipientLines(to, cc, bcc []string) []string {
+	lines := []string{
+		"To: " + orNone(joinAddrs(to)),
+		"CC: " + orNone(joinAddrs(cc)),
+		"BCC: " + orNone(joinAddrs(bcc)),
+	}
+	if w := recipientWarning(to, cc, bcc); w != "" {
+		lines = append(lines, w)
+	}
+	return lines
 }
 
 // messageAttachmentsList renders every attachment already on a server
@@ -271,7 +280,7 @@ func replyPromptBody(deps Deps, parent gpa.Message, replyAll bool, in replyInput
 	}
 	to, cc := replyRecipients(deps, parent, replyAll)
 	parts := []string{verb + " message " + capField(in.InReplyTo, promptNameMaxRunes)}
-	parts = append(parts, recipientLines(joinAddrs(to), joinAddrs(cc), "")...)
+	parts = append(parts, recipientLines(to, cc, nil)...)
 	if rt := replyToAddrs(parent); len(rt) > 0 && parent.Sender != nil && len(addrDiff(rt, []string{parent.Sender.Address})) > 0 {
 		parts = append(parts, "Note: the original was sent by "+joinAddrs([]string{parent.Sender.Address})+
 			" but asks for replies to go to its Reply-To address "+joinAddrs(rt))

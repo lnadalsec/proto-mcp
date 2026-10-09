@@ -9,8 +9,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 )
+
+// lockwatchEnvOverrideAllowed gates PROTONMCP_LOCKWATCH. A variable
+// (not a direct testing.Testing call) only so the production branch
+// can be exercised from a test.
+var lockwatchEnvOverrideAllowed = testing.Testing
 
 // Phase 7/A — Swift lockwatch helper integration.
 //
@@ -122,7 +128,8 @@ func runLockwatchOnce(ctx context.Context, binPath string, lockFn func(reason st
 // resolveLockwatchPath discovers the helper binary across the
 // install layouts proto-mcp supports:
 //
-//  1. Env override: PROTONMCP_LOCKWATCH (test / dev override).
+//  1. Env override: PROTONMCP_LOCKWATCH — TEST ONLY, ignored outside
+//     `go test` (see ResolveLockwatchPathFrom).
 //  2. Sibling of the running daemon binary:
 //     <dir(os.Executable())>/helpers/lockwatch/protonmcp-lockwatch
 //     (dev layout: bin/protonmcpd + helpers/lockwatch/...)
@@ -151,7 +158,14 @@ func resolveLockwatchPath() (string, bool) {
 // Exported so `protonmcp doctor` reports the same answer the daemon
 // will reach at runtime instead of reimplementing the search.
 func ResolveLockwatchPathFrom(exe string) (string, bool) {
-	if envPath := os.Getenv("PROTONMCP_LOCKWATCH"); envPath != "" {
+	// Same rule as PROTONMCP_TOUCHID (internal/approval/path.go, SECURITY
+	// D4): the override is honoured only inside `go test`. The process
+	// that spawns us (launchd plist, MCP client, shell profile) is not
+	// trusted, and a substitute helper that never prints
+	// "screen_locked" / "sleep" silently disables auto-lock. Outside
+	// tests the variable is ignored and discovery proceeds normally,
+	// so a stale export can't take lock-on-sleep down with it.
+	if envPath := os.Getenv("PROTONMCP_LOCKWATCH"); envPath != "" && lockwatchEnvOverrideAllowed() {
 		if isExecutable(envPath) {
 			return envPath, true
 		}

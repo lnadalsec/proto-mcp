@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRotatorRotatesAtThreshold(t *testing.T) {
@@ -53,28 +54,23 @@ func TestRotatorDropsOldestGeneration(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "log")
 
-	// 3 generations, threshold 10 bytes → 4 rotations should leave
-	// .1/.2/.3 and have evicted the original first generation.
+	// 3 generations, threshold 10 bytes.
 	r, err := NewRotator(path, 10, 3)
 	if err != nil {
 		t.Fatalf("NewRotator: %v", err)
 	}
 	defer r.Close()
 
-	// Write 11 bytes, four times. Each write rotates before
-	// itself, so we end up with:
-	//   write 1: 'a' × 11 → no rotation (file was empty)
-	//                       wait — 0 + 11 > 10, so rotates first;
-	//                       .1 is empty (current was empty), current=‘a’×11
-	//
-	// Simpler: write 11 bytes, then 11, then 11, then 11.
-	for _, c := range []byte{'a', 'b', 'c', 'd'} {
+	// Write 11 bytes, five times. The first write lands in the empty
+	// file without rotating (an empty file is never rotated); every
+	// later write rotates before itself.
+	for _, c := range []byte{'z', 'a', 'b', 'c', 'd'} {
 		if _, err := r.Write(bytes.Repeat([]byte{c}, 11)); err != nil {
 			t.Fatalf("write %c: %v", c, err)
 		}
 	}
-	// After 4 writes: current=‘d’ × 11. .1=‘c’ × 11. .2=‘b’ × 11.
-	// .3=‘a’ × 11. Original empty file was evicted past .3.
+	// After 5 writes: current=‘d’ × 11. .1=‘c’ × 11. .2=‘b’ × 11.
+	// .3=‘a’ × 11. ‘z’ was evicted past .3.
 	// And .4 must NOT exist (maxGenerations = 3).
 	if _, err := os.Stat(filepath.Join(dir, "log.4")); !os.IsNotExist(err) {
 		t.Errorf("expected no .4; stat err = %v", err)
@@ -157,4 +153,120 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// A rename failure during rotation must not kill the writer: records
+// keep landing in the current file and rotation is retried later.
+func TestRotatorSurvivesRotationFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log")
+
+	r, err := NewRotator(path, 10, 1)
+	if err != nil {
+		t.Fatalf("NewRotator: %v", err)
+	}
+	defer r.Close()
+	clock := time.Unix(1_000_000, 0)
+	r.now = func() time.Time { return clock }
+
+	// A non-empty directory squatting on <path>.1 makes both the
+	// Remove of the oldest generation and the rename of the current
+	// file fail.
+	blocker := filepath.Join(dir, "log.1")
+	if err := os.MkdirAll(filepath.Join(blocker, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, rec := range []string{"aaaaaaaa", "bbbbbbbb", "cccccccc"} {
+		if _, err := r.Write([]byte(rec)); err != nil {
+			t.Fatalf("write %q: %v (rotation failure must not fail writes)", rec, err)
+		}
+	}
+	if err := r.Rotate(); err == nil {
+		t.Fatal("explicit Rotate should report the rename failure")
+	}
+	if _, err := r.Write([]byte("dddddddd")); err != nil {
+		t.Fatalf("write after failed Rotate: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "aaaaaaaabbbbbbbbccccccccdddddddd" {
+		t.Fatalf("current = %q; want every record kept", got)
+	}
+
+	// Obstacle gone, but still inside the back-off window: no rotation.
+	if err := os.RemoveAll(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Write([]byte("e")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(blocker); !os.IsNotExist(err) {
+		t.Fatalf("rotation retried before the back-off elapsed (stat err = %v)", err)
+	}
+
+	// After the back-off, the next write rotates normally.
+	clock = clock.Add(rotateRetryInterval)
+	if _, err := r.Write([]byte("ffffffff")); err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.ReadFile(blocker)
+	if err != nil {
+		t.Fatalf("read .1 after retry: %v", err)
+	}
+	if string(old) != "aaaaaaaabbbbbbbbccccccccdddddddde" {
+		t.Errorf(".1 = %q", old)
+	}
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cur) != "ffffffff" {
+		t.Errorf("current = %q; want ffffffff", cur)
+	}
+}
+
+// A record larger than maxBytes hitting an empty current file must
+// not rotate it: that would push an empty generation into the history
+// and evict the oldest real one.
+func TestRotatorOversizedRecordDoesNotRotateEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log")
+
+	r, err := NewRotator(path, 10, 2)
+	if err != nil {
+		t.Fatalf("NewRotator: %v", err)
+	}
+	defer r.Close()
+
+	if _, err := r.Write([]byte("aaaaa")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rotate(); err != nil { // .1 = aaaaa, current empty
+		t.Fatal(err)
+	}
+	big := bytes.Repeat([]byte("b"), 25)
+	if _, err := r.Write(big); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "log.2")); !os.IsNotExist(err) {
+		t.Errorf("empty file was rotated: .2 exists (stat err = %v)", err)
+	}
+	one, err := os.ReadFile(filepath.Join(dir, "log.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(one) != "aaaaa" {
+		t.Errorf(".1 = %q; want history preserved", one)
+	}
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cur, big) {
+		t.Errorf("current = %d bytes; want the oversized record", len(cur))
+	}
 }
