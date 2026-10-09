@@ -52,6 +52,14 @@ func main() {
 		return
 	}
 
+	// Owner-only umask before the daemon creates anything: rotated
+	// logs, audit.log, store.db, approval state and — crucially — the
+	// Unix socket, which bind(2) creates with 0777 &^ umask. Without
+	// this the socket briefly exists with the launchd-inherited umask
+	// (typically 022) before openSocket's chmod. Mirrors SECURITY M-3
+	// in cmd/protonmcp/main.go.
+	syscall.Umask(0o077)
+
 	// Phase 7/B: route the daemon's slog output through a rotating
 	// writer at ~/Library/Logs/protonmcp/daemon.log (50 MiB × 10
 	// generations). Launchd's plist StandardErrorPath also points
@@ -230,20 +238,67 @@ func run() error {
 }
 
 // resolveSocketPath returns the configured socket path, creating
-// the containing directory if it doesn't exist (mode 0700).
+// the containing directory if it doesn't exist (mode 0700) and
+// verifying it is a private directory — for a --socket override too,
+// since the directory's 0700 mode is what keeps other UIDs off the
+// socket.
 func resolveSocketPath(override string) (string, error) {
 	if override != "" {
-		return override, nil
+		p, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("socket path: %w", err)
+		}
+		// A user-chosen directory is never chmodded behind their
+		// back: refuse instead.
+		if err := ensurePrivateSocketDir(filepath.Dir(p), false); err != nil {
+			return "", err
+		}
+		return p, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
 	dir := filepath.Join(home, "Library", "Application Support", "protonmcp")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create socket dir: %w", err)
+	if err := ensurePrivateSocketDir(dir, true); err != nil {
+		return "", err
 	}
 	return filepath.Join(dir, "protonmcp.sock"), nil
+}
+
+// ensurePrivateSocketDir creates dir (0700) if missing, then checks
+// that it is a real directory (not a symlink) owned by the current
+// UID with no group/other permission bits. tighten=true chmods an
+// owned-but-too-open directory to 0700 (used for our own Application
+// Support directory); tighten=false refuses it.
+func ensurePrivateSocketDir(dir string, tighten bool) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("stat socket dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory (symlinks are refused)", dir)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("socket dir %s: cannot read owner", dir)
+	}
+	if int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("socket dir %s is owned by uid %d, not %d", dir, st.Uid, os.Getuid())
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if !tighten {
+			return fmt.Errorf("socket dir %s has mode %#o; it must not be accessible to group/other (chmod 700 it or pick another --socket)",
+				dir, info.Mode().Perm())
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("chmod socket dir: %w", err)
+		}
+	}
+	return nil
 }
 
 // openSocket creates and binds the Unix listener with 0600 perms.
@@ -276,9 +331,11 @@ func openSocket(path string) (*net.UnixListener, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 0600 — same-UID can connect, nothing else. Application Support
-	// directory itself is 0700 so cross-UID is already blocked, but
-	// explicit chmod on the socket is defense in depth.
+	// 0600 — same-UID can connect, nothing else. There is no window
+	// where the node is reachable by others: main() installs a 0o077
+	// umask before anything runs, so bind(2) already created it
+	// 0700, and resolveSocketPath verified the parent is a 0700
+	// directory we own. The explicit chmod is defense in depth.
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listener.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
