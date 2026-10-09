@@ -47,6 +47,15 @@ Plus, around the binaries themselves:
   connecting PID/UID is recorded in the audit log.
 - **Default-deny policy** for unknown tools. A tool with no policy stub
   fails registration — you cannot accidentally ship an unguarded write.
+- **Touch ID to loosen the policy.** `policy.yaml` is writable by any
+  process running as you, MCP clients with a shell included. An
+  override that is more permissive than the built-in defaults (a
+  prompt turned into allow, a dropped confirmation, a longer approval
+  TTL, a wider recipient allowlist, idle lock off) is applied only
+  after a Touch ID prompt that lists each change — at daemon start and
+  on every reload. Declined: the built-in rules (at start) or the
+  previous policy (on reload) stay in force. Tightening needs no
+  prompt. The file must be yours and not group/world-writable.
 - **Auto-lock** on screen lock, sleep, and idle timeout. Walk away and
   the daemon locks; resuming requires Touch ID.
 - **Redacted audit log.** Passwords / tokens / cookies become
@@ -87,6 +96,11 @@ anything a sender chose to put in it.
   email exfiltrates nothing on its own, and any send it provokes still
   needs your fingerprint on a prompt that names the actual recipient.
   **Do not blanket-approve sends**, and treat message bodies as hostile.
+
+  Bodies reach the model inside an untrusted-content fence whose
+  markers carry a random per-call id; `<<<` inside the body is
+  defused, so a message cannot close the fence itself. Subjects,
+  sender names and calendar fields are not fenced yet.
 
   The same applies to `mail_read`'s `unsubscribe` field, taken from the
   `List-Unsubscribe` / `List-Unsubscribe-Post` headers. Those headers

@@ -298,3 +298,67 @@ func TestBrokerInvalidateNilSafe(t *testing.T) {
 		t.Errorf("nil broker Invalidate = %d, want 0", got)
 	}
 }
+
+// An approval granted by a prompt that was already up when the cache
+// was invalidated (lock, policy reload) must not be cached: the next
+// identical call has to prompt again.
+func TestBrokerInvalidateDuringPromptIsNotCached(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("posix helper fixture")
+	}
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	release := filepath.Join(dir, "release")
+	count := filepath.Join(dir, "count")
+	helper := filepath.Join(dir, "fake-touchid")
+	script := "#!/bin/sh\necho x >> " + count + "\ntouch " + started +
+		"\nwhile [ ! -f " + release + " ]; do sleep 0.01; done\nexit 0\n"
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := New(helper, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{
+		Tool:   "mail_move",
+		Caller: caller.Caller{PID: 42},
+		Args:   json.RawMessage(`{"id":"m1"}`),
+		Policy: policy.ToolPolicy{Decision: policy.DecisionPrompt, TTL: "5m"},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Request(context.Background(), req)
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper never started")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	b.Invalidate()
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+
+	src, err := b.Request(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	if src != SourceTouchID {
+		t.Fatalf("second request source = %q, want %q (approval from before the purge was cached)", src, SourceTouchID)
+	}
+	data, _ := os.ReadFile(count)
+	if n := len(data) / 2; n != 2 {
+		t.Fatalf("helper ran %d times, want 2", n)
+	}
+}

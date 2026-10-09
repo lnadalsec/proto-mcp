@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -76,6 +77,17 @@ type Runtime struct {
 	// it, so a pending unlock can't freeze the daemon (PROTO-141).
 	unlockMu sync.Mutex
 
+	// callMu drains session users before Lock zeroes the session.
+	// Tool calls (via mcp.WithCallGuard) and the background sync hold
+	// it shared; Lock takes it exclusively. lockedFlag mirrors locked
+	// so beginCall can refuse a call without taking r.mu.
+	callMu     sync.RWMutex
+	lockedFlag atomic.Bool
+	// syncCancel cancels the background sync tick in flight, so Lock
+	// doesn't wait up to backgroundSyncTimeout for it to drain.
+	syncCancelMu sync.Mutex
+	syncCancel   context.CancelFunc
+
 	// Phase 7/A — auto-lock infrastructure. idleTracker bumps on
 	// every tool call via the mcp.WithToolCallObserver hook.
 	// lockwatchCancel terminates the Swift lockwatch helper on
@@ -113,12 +125,8 @@ func (r *Runtime) Lock(reason string) {
 	}
 	r.locked = true
 	r.lockReason = reason
-	if r.Session != nil {
-		// Session.Close() zeros the in-memory keyring + drops
-		// the access/refresh tokens from the wrapped client. The
-		// Keychain blob is untouched; unlock re-loads from there.
-		r.Session.Close()
-	}
+	r.lockedFlag.Store(true)
+	sess := r.Session
 	// Drop every cached approval — a locked-then-unlocked daemon
 	// shouldn't honor pre-lock prompts (the user may have wanted
 	// to revoke them by locking).
@@ -126,6 +134,27 @@ func (r *Runtime) Lock(reason string) {
 		r.Broker.Invalidate()
 	}
 	r.mu.Unlock()
+
+	// Wait for in-flight tool calls and the background sync to finish
+	// with the session before zeroing it: Close deletes from maps the
+	// handlers read, and that race kills the process. New calls are
+	// refused by beginCall from here on (lockedFlag). r.mu is NOT held
+	// while waiting — the sync tick takes it inside its bracket.
+	r.syncCancelMu.Lock()
+	if r.syncCancel != nil {
+		r.syncCancel()
+	}
+	r.syncCancelMu.Unlock()
+	r.callMu.Lock()
+	if sess != nil {
+		// Session.Close() zeros the in-memory keyring + drops
+		// the access/refresh tokens from the wrapped client. The
+		// Keychain blob is untouched; unlock re-loads from there.
+		// It is the pre-lock session even if an unlock already swapped
+		// in a new one meanwhile; Close is idempotent.
+		sess.Close()
+	}
+	r.callMu.Unlock()
 
 	slog.Info("daemon locked", "reason", reason)
 	// Published outside r.mu: the tool-call hot path takes RLock on
@@ -211,11 +240,46 @@ func (r *Runtime) Unlock(ctx context.Context) error {
 	}
 	r.locked = false
 	r.lockReason = ""
+	r.lockedFlag.Store(false)
 	r.mu.Unlock()
 
 	slog.Info("daemon unlocked")
 	r.publishLockState(false, "")
 	return nil
+}
+
+// policyLoosenGate asks Touch ID before a policy.yaml that loosens the
+// embedded defaults takes effect (at startup and on every reload).
+// The file is writable by any process running as the user, MCP
+// clients with a shell included, so writing it must not be enough to
+// switch a prompt off.
+func policyLoosenGate(broker *approval.Broker) policy.LoosenGate {
+	return func(changes []string) error {
+		body := "policy.yaml loosens proto-mcp's consent rules:\n- " +
+			strings.Join(changes, "\n- ") +
+			"\n\nApprove only if you made this change yourself. " +
+			"Declining keeps the built-in rules."
+		_, err := broker.Request(context.Background(), approval.Request{
+			Tool:   "policy_override",
+			Caller: caller.Caller{PID: os.Getpid()},
+			Policy: policy.ToolPolicy{Decision: policy.DecisionPrompt, Confirm: true},
+			Title:  mcp.SanitizePromptText("Apply a looser proto-mcp policy?", 120),
+			Body:   mcp.SanitizePromptText(body, 4000),
+		})
+		return err
+	}
+}
+
+// beginCall opens a shared bracket on the session for one tool call
+// or sync tick. ok=false when the daemon is locked (or locking).
+func (r *Runtime) beginCall() (release func(), ok bool) {
+	r.callMu.RLock()
+	if r.lockedFlag.Load() {
+		r.callMu.RUnlock()
+		return nil, false
+	}
+	// nosemgrep: trailofbits.go.missing-runlock-on-rwmutex.missing-runlock-on-rwmutex -- the caller releases via the returned func
+	return r.callMu.RUnlock, true
 }
 
 // SessionBundle is the cmd-side wrapper around a Proton session.
@@ -352,7 +416,7 @@ func Setup(ctx context.Context, cfg SetupConfig) (*Runtime, error) {
 	}
 	sess := bundle.GetSession()
 
-	// 4. Policy engine.
+	// 4. Approval broker + policy engine.
 	overridePath, err := policy.DefaultOverridePath()
 	if err != nil {
 		bundle.Close()
@@ -360,7 +424,18 @@ func Setup(ctx context.Context, cfg SetupConfig) (*Runtime, error) {
 		_ = st.Close()
 		return nil, fmt.Errorf("policy override path: %w", err)
 	}
-	engine, err := policy.New(ctx, overridePath, logger)
+	// The approval broker is built before the policy engine: the engine
+	// asks it to confirm (Touch ID) an override that loosens the
+	// defaults. The helper is guaranteed present here — Setup fails
+	// closed above (PROTO-127) if it couldn't resolve a trusted one.
+	broker, err := approval.New(startupHelperPath, logger)
+	if err != nil {
+		bundle.Close()
+		sess.Close()
+		_ = st.Close()
+		return nil, fmt.Errorf("approval broker: %w", err)
+	}
+	engine, err := policy.NewGated(ctx, overridePath, logger, policyLoosenGate(broker))
 	if err != nil {
 		bundle.Close()
 		sess.Close()
@@ -400,20 +475,6 @@ func Setup(ctx context.Context, cfg SetupConfig) (*Runtime, error) {
 		sess.Close()
 		_ = st.Close()
 		return nil, fmt.Errorf("audit writer: %w", err)
-	}
-
-	// 7. Approval broker. The helper is guaranteed present here — Setup
-	// fails closed above (PROTO-127) if it couldn't resolve a trusted
-	// one — so there's no nil-broker / "prompts denied" degraded mode.
-	// Reuse the resolved path so we only pgrep + stat once.
-	broker, err := approval.New(startupHelperPath, logger)
-	if err != nil {
-		_ = auditWriter.Close()
-		pidCleanup()
-		bundle.Close()
-		sess.Close()
-		_ = st.Close()
-		return nil, fmt.Errorf("approval broker: %w", err)
 	}
 
 	// 8. Caller resolver.
@@ -457,6 +518,7 @@ func Setup(ctx context.Context, cfg SetupConfig) (*Runtime, error) {
 		mcp.WithLockState(rt.Locked),
 		mcp.WithUnlockRequest(rt.Unlock),
 		mcp.WithToolCallObserver(rt.idleTracker.bumpActivity),
+		mcp.WithCallGuard(rt.beginCall),
 	}
 	if broker != nil {
 		opts = append(opts, mcp.WithApproval(broker))
@@ -583,6 +645,11 @@ func (r *Runtime) backgroundSyncOnce(ctx context.Context, logger *slog.Logger) {
 	if locked, _ := r.Locked(); locked {
 		return // resumes automatically after unlock
 	}
+	release, ok := r.beginCall()
+	if !ok {
+		return
+	}
+	defer release()
 	r.mu.RLock()
 	sess := r.Session
 	st := r.Store
@@ -593,6 +660,14 @@ func (r *Runtime) backgroundSyncOnce(ctx context.Context, logger *slog.Logger) {
 
 	syncCtx, cancel := context.WithTimeout(ctx, backgroundSyncTimeout)
 	defer cancel()
+	r.syncCancelMu.Lock()
+	r.syncCancel = cancel
+	r.syncCancelMu.Unlock()
+	defer func() {
+		r.syncCancelMu.Lock()
+		r.syncCancel = nil
+		r.syncCancelMu.Unlock()
+	}()
 	res, err := syncpkg.RunOnce(syncCtx, sess, st)
 	if err != nil {
 		switch {

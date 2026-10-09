@@ -126,6 +126,7 @@ type Engine struct {
 	mu       sync.RWMutex
 	doc      document
 	override string // path to the user override, "" if none/unreadable
+	gate     LoosenGate
 
 	logger *slog.Logger
 }
@@ -138,22 +139,58 @@ type Engine struct {
 // — that's our own code, treat as a build-time bug. User override
 // failures are logged at Warn level and the default proceeds.
 func New(ctx context.Context, overridePath string, logger *slog.Logger) (*Engine, error) {
+	return NewGated(ctx, overridePath, logger, nil)
+}
+
+// NewGated is New with a LoosenGate: an override more permissive than
+// the embedded default is applied only if gate approves it, here and
+// on every Reload. A refused override at startup leaves the defaults
+// in force. The daemon passes a Touch ID gate; display-only callers
+// (`protonmcp policy show`) pass nil.
+func NewGated(ctx context.Context, overridePath string, logger *slog.Logger, gate LoosenGate) (*Engine, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	e := &Engine{override: overridePath, logger: logger}
+	e := &Engine{override: overridePath, logger: logger, gate: gate}
 	doc, err := parseDocument(defaultYAML)
 	if err != nil {
 		return nil, fmt.Errorf("parse embedded default policy: %w", err)
 	}
 	e.doc = doc
 	if overridePath != "" {
-		if err := e.applyOverride(); err != nil {
-			logger.Warn("policy override unreadable; using defaults only",
+		cand, err := e.candidate()
+		if err != nil {
+			logger.Warn("policy override not applied; using defaults only",
 				"path", overridePath, "err", err.Error())
+			return e, nil
 		}
+		e.doc = cand
 	}
 	return e, nil
+}
+
+// candidate builds default + override and runs the loosening gate.
+func (e *Engine) candidate() (document, error) {
+	base, err := parseDocument(defaultYAML)
+	if err != nil {
+		return document{}, fmt.Errorf("re-parse embedded default: %w", err)
+	}
+	cand, err := parseDocument(defaultYAML)
+	if err != nil {
+		return document{}, fmt.Errorf("re-parse embedded default: %w", err)
+	}
+	if err := e.applyOverrideInto(&cand); err != nil {
+		return document{}, err
+	}
+	if e.gate != nil {
+		if changes := loosenings(base, cand); len(changes) > 0 {
+			if err := e.gate(changes); err != nil {
+				return document{}, fmt.Errorf("override loosens the default policy and was not approved: %w", err)
+			}
+			e.logger.Warn("policy override loosens the defaults; approved", "changes", changes)
+		}
+	}
+	return cand, nil
 }
 
 // Decide returns the policy entry for the given tool name + args +
@@ -205,33 +242,37 @@ func (e *Engine) Reload() error {
 	// Re-parse the embedded default from scratch — defends against
 	// any caller that mutated the in-memory map (we don't expose
 	// that path, but Reload is a good safety net).
-	base, err := parseDocument(defaultYAML)
+	cand, err := e.candidate()
 	if err != nil {
-		return fmt.Errorf("re-parse embedded default: %w", err)
-	}
-
-	if err := e.applyOverrideInto(&base); err != nil {
 		return err
 	}
 
 	e.mu.Lock()
-	e.doc = base
+	e.doc = cand
 	e.mu.Unlock()
 	return nil
 }
 
-// applyOverride is the New()-time version: loads override into the
-// engine's current doc. applyOverrideInto is the Reload() version
-// that operates on a candidate doc and only commits on success.
-func (e *Engine) applyOverride() error {
-	return e.applyOverrideInto(&e.doc)
-}
-
+// applyOverrideInto merges the user override into a candidate doc;
+// callers commit it only on success.
 func (e *Engine) applyOverrideInto(into *document) error {
-	data, err := os.ReadFile(e.override)
+	fi, err := os.Stat(e.override)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil // no override file is fine
+		}
+		return fmt.Errorf("stat override: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("override is not a regular file")
+	}
+	if err := checkOverrideOwner(fi); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(e.override)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // removed between Stat and read
 		}
 		return fmt.Errorf("read override: %w", err)
 	}
