@@ -428,12 +428,18 @@ func escapeXML(s string) string {
 	return b.String()
 }
 
+// launchctlPath is absolute on purpose: resolving "launchctl" through
+// PATH would let any user-writable directory earlier in PATH (~/bin,
+// the Homebrew prefix, a project's node_modules/.bin under an MCP
+// client) shadow it and receive our bootstrap / bootout calls.
+const launchctlPath = "/bin/launchctl"
+
 // launchctl shells out to /bin/launchctl with the given args. Output
 // goes to our stderr so the user sees real launchctl errors verbatim
 // (those messages are the most useful diagnostic for plist /
 // permission issues).
 func launchctl(args ...string) error {
-	cmd := exec.Command("launchctl", args...)
+	cmd := exec.Command(launchctlPath, args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -462,7 +468,7 @@ func launchctlBootstrapWithRetry(domain, plistPath string) error {
 	label := domain + "/" + daemonLabel
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if exec.Command("launchctl", "print", label).Run() != nil {
+		if exec.Command(launchctlPath, "print", label).Run() != nil {
 			break // label is gone, ready to bootstrap
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -484,7 +490,7 @@ func launchctlBootstrapWithRetry(domain, plistPath string) error {
 		if d > 0 {
 			time.Sleep(d)
 		}
-		cmd := exec.Command("launchctl", "bootstrap", domain, plistPath)
+		cmd := exec.Command(launchctlPath, "bootstrap", domain, plistPath)
 		var stderr bytes.Buffer
 		cmd.Stdout = &stderr
 		cmd.Stderr = &stderr
@@ -511,7 +517,7 @@ func launchctlBootstrapWithRetry(domain, plistPath string) error {
 // LaunchAgent. `launchctl print gui/$UID/$LABEL` exits 0 if loaded,
 // non-zero otherwise — cleaner than parsing `list` output.
 func labelLoaded() bool {
-	cmd := exec.Command("launchctl", "print", "gui/"+uidString()+"/"+daemonLabel)
+	cmd := exec.Command(launchctlPath, "print", "gui/"+uidString()+"/"+daemonLabel)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
@@ -522,7 +528,7 @@ func labelLoaded() bool {
 // loaded-and-running labels; for loaded-but-exited labels the field
 // is absent.
 func daemonPID() int {
-	out, err := exec.Command("launchctl", "print", "gui/"+uidString()+"/"+daemonLabel).Output()
+	out, err := exec.Command(launchctlPath, "print", "gui/"+uidString()+"/"+daemonLabel).Output()
 	if err != nil {
 		return 0
 	}
