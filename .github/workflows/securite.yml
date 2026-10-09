@@ -162,7 +162,9 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p sarif
-          "$(go env GOPATH)/bin/govulncheck" -format sarif ./... > sarif/govulncheck.sarif || true
+          # govulncheck émet des piles d'appel en double, que code scanning refuse.
+          "$(go env GOPATH)/bin/govulncheck" -format sarif ./... \
+            | jq '.runs[].results[]? |= (if .stacks then .stacks |= unique else . end)' > sarif/govulncheck.sarif || true
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Rapports SARIF (artefact)
@@ -299,15 +301,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # Go (dont règles gosec), Swift (helpers Touch ID / lockwatch), scripts shell de
-      # release, secrets et GitHub Actions.
+      # Go (dont règles gosec), Swift (helpers Touch ID / lockwatch), secrets et
+      # GitHub Actions. Les scripts shell sont couverts par shellcheck (job workflows).
       - name: Analyse Semgrep
         id: semgrep
         continue-on-error: true
         run: |
           mkdir -p sarif
           semgrep scan --metrics=off --disable-version-check --error \
-            --config p/golang --config p/gosec --config p/swift --config p/bash \
+            --config p/golang --config p/gosec --config p/swift --config p/trailofbits \
             --config p/secrets --config p/github-actions --config p/security-audit \
             --sarif-output=sarif/semgrep.sarif --text
 
@@ -386,7 +388,7 @@ jobs:
 
   # 4. Workflows GitHub Actions
   workflows:
-    name: Workflows (zizmor, actionlint)
+    name: Workflows (zizmor, actionlint, shellcheck)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -417,6 +419,12 @@ jobs:
         id: actionlint
         continue-on-error: true
         run: actionlint
+
+      # Scripts de release et de signature (shellcheck est préinstallé sur le runner).
+      - name: shellcheck (scripts/)
+        id: shellcheck
+        continue-on-error: true
+        run: shellcheck --severity=warning scripts/*.sh .github/actions/alert/*.sh
 
       # Configuration : .github/zizmor.yml. Le jeton reste en lecture seule.
       - name: zizmor
@@ -467,6 +475,7 @@ jobs:
         env:
           ACTIONLINT: ${{ steps.actionlint.outcome }}
           ZIZMOR: ${{ steps.zizmor.outcome }}
+          SHELLCHECK: ${{ steps.shellcheck.outcome }}
         run: |
           libelle() { case "$1" in success) echo "OK" ;; failure) echo "**ÉCHEC**" ;; *) echo "non exécuté" ;; esac; }
           {
@@ -475,8 +484,9 @@ jobs:
             echo "|---|---|"
             echo "| actionlint | $(libelle "$ACTIONLINT") |"
             echo "| zizmor | $(libelle "$ZIZMOR") |"
+            echo "| shellcheck (scripts/) | $(libelle "$SHELLCHECK") |"
           } >> "$GITHUB_STEP_SUMMARY"
-          [ "$ACTIONLINT" = success ] && [ "$ZIZMOR" = success ]
+          [ "$ACTIONLINT" = success ] && [ "$ZIZMOR" = success ] && [ "$SHELLCHECK" = success ]
 
   # 5. Publication des rapports SARIF dans l'onglet Security.
   sarif:
@@ -546,7 +556,7 @@ jobs:
           noms='{"secrets":"Secrets (gitleaks)","dependances-go":"Dépendances (go mod verify, govulncheck)",
             "dependances-osv":"Dépendances (OSV-Scanner)","revue-dependances":"Revue des dépendances (PR)",
             "semgrep":"Code (Semgrep)","codeql":"Code (CodeQL)",
-            "workflows":"Workflows (zizmor, actionlint)","sarif":"Publication SARIF"}'
+            "workflows":"Workflows (zizmor, actionlint, shellcheck)","sarif":"Publication SARIF"}'
           if echo "$RESULTATS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' > /dev/null; then
             statut=failure
           else

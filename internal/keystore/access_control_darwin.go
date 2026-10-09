@@ -25,9 +25,9 @@ import (
 // Returns nil on success, or an error wrapping the OSStatus from
 // Security.framework. The most common non-zero results:
 //
-//   -25291  errSecAllocate         (allocation failure — usually OOM)
-//   -25308  errSecInteractionNotAllowed (keychain locked, e.g. screen lock)
-//   -25300  errSecItemNotFound     (update on missing item — shouldn't happen)
+//	-25291  errSecAllocate         (allocation failure — usually OOM)
+//	-25308  errSecInteractionNotAllowed (keychain locked, e.g. screen lock)
+//	-25300  errSecItemNotFound     (update on missing item — shouldn't happen)
 //
 // A full OSStatus reference: <https://www.osstatus.com/>
 func saveProtected(service, account, label string, data []byte) error {

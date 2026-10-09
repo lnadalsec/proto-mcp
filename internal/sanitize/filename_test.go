@@ -134,7 +134,7 @@ func TestFilenameEmptyFallback(t *testing.T) {
 		"",
 		"   ",
 		"...",
-		"\x01\x02\x03",  // C0 controls only — all stripped
+		"\x01\x02\x03", // C0 controls only — all stripped
 		"‮‭⁦",          // bidi controls only — all stripped
 	} {
 		got := Filename(tc)

@@ -55,9 +55,9 @@ type Request struct {
 // Construct via New(). Safe for concurrent use; the cache has its
 // own lock.
 type Broker struct {
-	helperPath  string
-	cache       *cache
-	logger      *slog.Logger
+	helperPath    string
+	cache         *cache
+	logger        *slog.Logger
 	helperTimeout time.Duration
 }
 

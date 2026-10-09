@@ -202,17 +202,15 @@ jobs:
         with:
           subject-path: ${{ env.ARTIFACT_TGZ }}
 
+      # gh (préinstallé) plutôt qu'une action tierce : rien d'externe ne s'exécute
+      # avec contents: write pendant que la clé Developer ID est dans le trousseau.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          # body comes from the tag's annotation, or the repo's
-          # CHANGELOG if you maintain one; for now leave blank and
-          # let the maintainer fill it in via gh release edit.
-          files: |
-            ${{ env.ARTIFACT_TGZ }}
-            ${{ env.ARTIFACT_SHA }}
-          draft: true   # let the maintainer review before going live
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Brouillon : le mainteneur relit avant publication.
+          gh release create "$GITHUB_REF_NAME" --draft --generate-notes --verify-tag \
+            "$ARTIFACT_TGZ" "$ARTIFACT_SHA"
 
       - name: Cleanup keychain
         if: always()

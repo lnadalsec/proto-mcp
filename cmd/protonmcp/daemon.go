@@ -351,8 +351,8 @@ func uidString() string { return strconv.Itoa(os.Geteuid()) }
 // plist schema. encoding/xml is fine here — the doc is tiny and
 // the field order is fixed by the marshaling rules.
 type launchPlist struct {
-	XMLName xml.Name `xml:"plist"`
-	Version string   `xml:"version,attr"`
+	XMLName xml.Name  `xml:"plist"`
+	Version string    `xml:"version,attr"`
 	Dict    plistDict `xml:"dict"`
 }
 
@@ -447,12 +447,12 @@ func launchctl(args ...string) error {
 // hundreds of ms, sometimes >1s observed live).
 //
 // Strategy:
-//   1. Wait up to 5 seconds for `launchctl print` to report the
-//      label is fully gone (the bootout-completion signal).
-//   2. Retry the bootstrap with backoff (100ms / 250ms / 500ms /
-//      1s / 2s / 3s — ~7s ceiling).
-//   3. Only retry on the EIO signature; non-EIO failures fail
-//      fast so real plist / permission errors surface immediately.
+//  1. Wait up to 5 seconds for `launchctl print` to report the
+//     label is fully gone (the bootout-completion signal).
+//  2. Retry the bootstrap with backoff (100ms / 250ms / 500ms /
+//     1s / 2s / 3s — ~7s ceiling).
+//  3. Only retry on the EIO signature; non-EIO failures fail
+//     fast so real plist / permission errors surface immediately.
 //
 // Successful retries print "succeeded on retry N" so operators
 // know we papered over a race rather than silently hid one.

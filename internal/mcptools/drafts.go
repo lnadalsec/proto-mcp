@@ -7,8 +7,8 @@ import (
 	"net/mail"
 	"time"
 
-	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gluon/rfc822"
+	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
 	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
@@ -135,7 +135,7 @@ func mailDraftCreate(deps Deps) mcp.Tool {
 
 func mailDraftUpdate(deps Deps) mcp.Tool {
 	return mcp.Tool{
-		Name:        "mail_draft_update",
+		Name: "mail_draft_update",
 		Description: "Update an existing draft. Any field you don't pass is preserved. body_html still runs through outbound sanitization. " +
 			"Optional `attachments` array uploads ADDITIONAL files (does not replace existing attachments on the draft — for that, mail_draft_delete + mail_draft_create).",
 		InputSchema: json.RawMessage(`{
