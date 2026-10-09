@@ -10,9 +10,9 @@ import (
 	"github.com/ProtonMail/go-proton-api/server"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // fakeProtonEnv logs into go-proton-api's in-process fake server and

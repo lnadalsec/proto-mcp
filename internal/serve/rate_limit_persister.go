@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 var _ mcp.RateLimitPruner = (*rateLimitStoreAdapter)(nil)

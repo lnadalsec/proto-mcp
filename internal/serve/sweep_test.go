@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // #130 — the startup retention sweep must clear decrypted calendar

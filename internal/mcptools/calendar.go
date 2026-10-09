@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // ----- calendar_list -----

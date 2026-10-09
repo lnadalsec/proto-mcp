@@ -10,7 +10,7 @@ import (
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
 )
 
 // Phase 8/B — attachment send path. Shared between the send family

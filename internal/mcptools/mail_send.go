@@ -13,8 +13,8 @@ import (
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // decodeBase64 is a thin wrapper for clarity at call sites that

@@ -41,7 +41,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE    := $(shell git log -1 --format=%cI 2>/dev/null)
 
-BUILDINFO := github.com/just-an-oldsalt/proto-mcp/internal/buildinfo
+BUILDINFO := github.com/lnadalsec/proto-mcp/internal/buildinfo
 LDFLAGS   := -X $(BUILDINFO).version=$(VERSION:v%=%) \
              -X $(BUILDINFO).commit=$(COMMIT) \
              -X $(BUILDINFO).date=$(DATE)

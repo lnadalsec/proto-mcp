@@ -10,8 +10,8 @@ import (
 
 	"github.com/microcosm-cc/bluemonday"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // --- PROTO-126: faithful recipient display in send-approval dialogs ---

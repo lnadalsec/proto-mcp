@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // backfillDone drives whether `protonmcp setup` re-runs a mailbox

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // Phase 8/C — mail_save_attachment. Decrypted attachment bytes

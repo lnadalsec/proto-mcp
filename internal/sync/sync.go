@@ -20,8 +20,8 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // cursorKey is the sync_state row name that holds the latest applied

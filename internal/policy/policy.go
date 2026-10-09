@@ -34,7 +34,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
 )
 
 // Decision is the outcome of Decide.

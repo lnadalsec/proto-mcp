@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
 )
 
 func TestDefaultPolicyAllowsReadTools(t *testing.T) {

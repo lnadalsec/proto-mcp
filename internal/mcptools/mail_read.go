@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // readResult is the wire shape for mail_read AND mail_read_thread

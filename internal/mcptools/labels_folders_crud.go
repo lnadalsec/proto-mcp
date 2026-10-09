@@ -8,8 +8,8 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // protonAccentColors is Proton's fixed label/folder colour palette —

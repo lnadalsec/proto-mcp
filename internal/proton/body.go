@@ -11,7 +11,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
 )
 
 // MessageBody is the post-decryption + post-sanitization payload of a

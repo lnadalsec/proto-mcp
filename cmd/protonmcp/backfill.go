@@ -11,9 +11,9 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/cli"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/cli"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // runBackfill drains the account's message metadata into the local

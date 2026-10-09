@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
 )
 
 // runVersion prints the build identity. Kept deliberately terse and

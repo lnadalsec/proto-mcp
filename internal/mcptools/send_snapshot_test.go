@@ -9,7 +9,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/proton"
 )
 
 func testDraft() gpa.Message {

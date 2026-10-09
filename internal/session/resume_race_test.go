@@ -11,9 +11,9 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // fakeKeychain is an in-memory stand-in for the Keychain entry.

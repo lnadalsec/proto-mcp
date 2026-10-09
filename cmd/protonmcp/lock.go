@@ -7,7 +7,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // runLock finds every running protonmcp serve-stdio / protonmcpd

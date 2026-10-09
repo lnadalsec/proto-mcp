@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/session"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/session"
 )
 
 // sessionBundle is an alias of the shared session.Bundle. Kept under

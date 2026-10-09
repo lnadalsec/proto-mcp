@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
+	"github.com/lnadalsec/proto-mcp/internal/approval"
 )
 
 // Issue #116 — the state a PromptSnapshot rendered the dialog from is

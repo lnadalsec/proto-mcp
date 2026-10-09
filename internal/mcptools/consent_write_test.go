@@ -12,9 +12,9 @@ import (
 	"github.com/ProtonMail/gluon/rfc822"
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/proton"
 )
 
 // --- helpers ---

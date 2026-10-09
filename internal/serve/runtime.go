@@ -24,15 +24,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
-	"github.com/just-an-oldsalt/proto-mcp/internal/audit"
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcptools"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	"github.com/lnadalsec/proto-mcp/internal/approval"
+	"github.com/lnadalsec/proto-mcp/internal/audit"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcptools"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // Runtime is the bundle of state every long-running MCP-serving

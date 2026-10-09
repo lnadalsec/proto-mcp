@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // The daemon ticks every 2 minutes; a blocked account must produce one

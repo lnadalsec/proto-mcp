@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // runCalendarBackfill seeds the local mirror with the account's calendars

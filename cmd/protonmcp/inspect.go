@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
 )
 
 // runInspect prints the current Keychain blob (with secret material

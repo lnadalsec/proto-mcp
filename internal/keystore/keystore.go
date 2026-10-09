@@ -21,7 +21,7 @@ import (
 
 	keychain "github.com/keybase/go-keychain"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 const (

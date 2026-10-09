@@ -3,7 +3,7 @@ package proton
 import (
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // Issue #123: session.TryResume defers Zero() on the Secret it passes

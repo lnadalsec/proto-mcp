@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
 )
 
 // label is the in-tool result-shape representation. Stored in the

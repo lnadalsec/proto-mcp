@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
 )
 
 // callEchoAs runs one initialize + tools/call conversation as peer and

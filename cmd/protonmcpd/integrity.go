@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
 )
 
 // D24 (Phase 7/C) — binary integrity check at daemon startup.

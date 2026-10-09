@@ -7,7 +7,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // applyEvent is the diff-application core — sync's actual API call

@@ -10,12 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/serve"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/approval"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/serve"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // `protonmcp doctor` — one command that answers "why isn't this

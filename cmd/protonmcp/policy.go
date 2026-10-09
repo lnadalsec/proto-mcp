@@ -8,7 +8,7 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // runPolicy is the `protonmcp policy {reload|show|validate}`

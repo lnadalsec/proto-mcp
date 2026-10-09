@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // openTestStore returns a fresh on-disk SQLite for the test. We

@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // readOutput is the JSON shape `protonmcp read` prints (Phase-2 plan

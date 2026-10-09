@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/session"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/session"
 )
 
 // runLogin does the full SRP + TOTP + key-unlock flow interactively

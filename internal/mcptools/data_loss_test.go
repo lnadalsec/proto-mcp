@@ -7,7 +7,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
 )
 
 func createDraft(t *testing.T, deps Deps, args string) string {

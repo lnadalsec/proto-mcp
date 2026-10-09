@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/audit"
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/audit"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 func newTestAudit(t *testing.T) (*audit.Writer, *store.Store) {

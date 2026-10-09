@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
 )
 
 // A file saved from an email must carry com.apple.quarantine, or a

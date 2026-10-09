@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
 )
 
 // roundtrip drives one request/response cycle against a Server.

@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/redact"
+	"github.com/lnadalsec/proto-mcp/internal/redact"
 )
 
 // Setup installs a default slog logger writing to stderr in text
