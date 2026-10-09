@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/mail"
 	"strings"
+	"time"
 
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
@@ -116,8 +117,9 @@ func mailSendDraft(deps Deps) mcp.Tool {
 		// For send_draft we need to fetch the draft to know
 		// recipients. The Recipients extractor signature is
 		// pure-args, so we can't reach the server here. Leave nil:
-		// allowed_recipients enforcement still works once the
-		// handler runs and validates recipients before SendDraft.
+		// draftPromptSnapshot checks allowed_recipients on the fetched
+		// draft before the dialog, and finalizeSend again before
+		// SendDraft.
 		Recipients: nil,
 		// Issue #116 — the dialog and the send share one fetch of the
 		// draft; sendDraftByID refuses if it changed after approval.
@@ -136,15 +138,10 @@ func mailSendDraft(deps Deps) mcp.Tool {
 }
 
 func mailReply(deps Deps) mcp.Tool {
-	type input struct {
-		InReplyTo   string                `json:"in_reply_to"`
-		BodyText    string                `json:"body_text,omitempty"`
-		BodyHTML    string                `json:"body_html,omitempty"`
-		Attachments []sendAttachmentInput `json:"attachments,omitempty"`
-	}
 	return mcp.Tool{
 		Name: "mail_reply",
-		Description: "Reply to a message. IRREVERSIBLE once sent. To = original sender. " +
+		Description: "Reply to a message. IRREVERSIBLE once sent. To = the original's Reply-To " +
+			"address(es) when it sets any, else its sender (the dialog says when Reply-To redirects). " +
 			"Subject prefixed Re: if not already. Optional `attachments` array attaches " +
 			"new files (does NOT carry over parent attachments — use mail_forward for that).",
 		InputSchema: json.RawMessage(`{
@@ -160,34 +157,30 @@ func mailReply(deps Deps) mcp.Tool {
 		}`),
 		OutputSchema: json.RawMessage(sendResultSchema),
 		// For reply, the recipient comes from the original message
-		// — needs a network fetch to extract. Skip server-side
-		// allowlist check; the handler validates before SendDraft.
+		// — needs a network fetch to extract, so the args-only
+		// middleware stage can't check it. replyPromptSnapshot checks
+		// it once the parent is fetched (before the dialog), and
+		// sendCompose again before creating the draft.
 		Recipients:     nil,
 		PromptSnapshot: replyPromptSnapshot(deps, "mail_reply", false),
 		Handler: func(ctx mcp.Context, raw json.RawMessage) (*mcp.ToolResult, error) {
-			var in input
+			var in replyInput
 			if err := json.Unmarshal(raw, &in); err != nil {
 				return nil, mcp.NewError(mcp.CodeInvalidParams, "mail_reply: "+err.Error())
 			}
 			if in.InReplyTo == "" {
 				return nil, mcp.NewError(mcp.CodeInvalidParams, "mail_reply: in_reply_to is required")
 			}
-			return sendReply(ctx, deps, "mail_reply", in.InReplyTo, false, in.BodyText, in.BodyHTML, in.Attachments)
+			return sendReply(ctx, deps, "mail_reply", false, in)
 		},
 	}
 }
 
 func mailReplyAll(deps Deps) mcp.Tool {
-	type input struct {
-		InReplyTo   string                `json:"in_reply_to"`
-		BodyText    string                `json:"body_text,omitempty"`
-		BodyHTML    string                `json:"body_html,omitempty"`
-		Attachments []sendAttachmentInput `json:"attachments,omitempty"`
-	}
 	return mcp.Tool{
 		Name: "mail_reply_all",
 		Description: "Reply-all to a message. IRREVERSIBLE. " +
-			"To = original sender. CC = original To+CC minus your own addresses. " +
+			"To = the original's Reply-To address(es), else its sender. CC = original To+CC minus your own addresses. " +
 			"BCC dropped (BCC by definition not visible to other recipients). " +
 			"Optional `attachments` array — same shape as mail_send.",
 		InputSchema: json.RawMessage(`{
@@ -205,14 +198,14 @@ func mailReplyAll(deps Deps) mcp.Tool {
 		Recipients:     nil,
 		PromptSnapshot: replyPromptSnapshot(deps, "mail_reply_all", true),
 		Handler: func(ctx mcp.Context, raw json.RawMessage) (*mcp.ToolResult, error) {
-			var in input
+			var in replyInput
 			if err := json.Unmarshal(raw, &in); err != nil {
 				return nil, mcp.NewError(mcp.CodeInvalidParams, "mail_reply_all: "+err.Error())
 			}
 			if in.InReplyTo == "" {
 				return nil, mcp.NewError(mcp.CodeInvalidParams, "mail_reply_all: in_reply_to is required")
 			}
-			return sendReply(ctx, deps, "mail_reply_all", in.InReplyTo, true, in.BodyText, in.BodyHTML, in.Attachments)
+			return sendReply(ctx, deps, "mail_reply_all", true, in)
 		},
 	}
 }
@@ -243,12 +236,16 @@ func mailForward(deps Deps) mcp.Tool {
 			"additionalProperties": false
 		}`),
 		OutputSchema: json.RawMessage(sendResultSchema),
+		// Normalized like extractSendRecipients (SECURITY D7), so
+		// "Alice <a@x.com>" is checked as a@x.com against a domain
+		// allowlist instead of being wrongly denied, and a second
+		// address packed into one entry is checked too.
 		Recipients: func(args json.RawMessage) []string {
 			var in forwardInput
 			if err := json.Unmarshal(args, &in); err != nil {
 				return nil
 			}
-			return append(append(append([]string{}, in.To...), in.CC...), in.BCC...)
+			return normalizeRecipients(allRecipients(in.To, in.CC, in.BCC))
 		},
 		// Issue #125 — one fetch of the parent renders the dialog
 		// (its subject, and its attachments when carried over) and
@@ -314,11 +311,34 @@ func extractSendRecipients(args json.RawMessage) []string {
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil
 	}
-	out := make([]string, 0, len(in.To)+len(in.CC)+len(in.BCC))
-	for _, entry := range append(append(append([]string{}, in.To...), in.CC...), in.BCC...) {
+	return normalizeRecipients(allRecipients(in.To, in.CC, in.BCC))
+}
+
+// normalizeRecipients runs every entry through normalizeRecipientList
+// and concatenates the bare addresses.
+func normalizeRecipients(entries []string) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
 		out = append(out, normalizeRecipientList(entry)...)
 	}
 	return out
+}
+
+// allowlistViolation returns the first of recipients (raw entries,
+// normalized here) that toolName's allowed_recipients policy rejects,
+// or "" when all pass or no allowlist applies. Used wherever the
+// recipients become known — before the approval dialog and before any
+// draft is created — so a denied send neither asks for Touch ID nor
+// leaves a draft behind.
+func allowlistViolation(deps Deps, toolName string, caller policy.Caller, recipients []string) string {
+	if deps.Policy == nil {
+		return ""
+	}
+	_, pol := deps.Policy.Decide(toolName, nil, caller)
+	if pol == nil || len(pol.AllowedRecipients) == 0 {
+		return ""
+	}
+	return firstDisallowedRecipient(normalizeRecipients(recipients), pol.AllowedRecipients)
 }
 
 // normalizeRecipientList parses one address-list string into bare
@@ -359,14 +379,15 @@ func sendPromptSnapshot(deps Deps, toolName string) func(context.Context, json.R
 }
 
 // sendPromptBody renders the literal To / CC / BCC / Subject lines the
-// user sees in the Touch ID dialog. Recipients come first, as bare
-// addresses (issue #125). Body content isn't shown: recipients,
-// subject, and attachments are what matter at approval time. Phase
-// 8/B — also appends an attachment summary line; attachment
+// user sees in the Touch ID dialog, then the body excerpt and an
+// attachment summary line. Recipients come first, as bare addresses
+// (issue #125). The body excerpt is built by outgoingBody, the same
+// function sendCompose builds the sent body with. Attachment
 // validation errors are swallowed here (the handler reports them).
 func sendPromptBody(deps Deps, in sendInput) string {
 	parts := recipientLines(promptAddrs(in.To), promptAddrs(in.CC), promptAddrs(in.BCC))
 	parts = append(parts, "Subject: "+capField(in.Subject, promptSubjectMaxRunes))
+	parts = append(parts, bodyExcerptLine(outgoingBody(in.BodyText, in.BodyHTML)))
 	if decoded, err := decodeAndValidateAttachments(deps, in.Attachments); err == nil {
 		if s := attachmentsSummary(decoded); s != "" {
 			parts = append(parts, s)
@@ -378,7 +399,15 @@ func sendPromptBody(deps Deps, in sendInput) string {
 // sendCompose is mail_send: create a draft, send it, return.
 // Phase 8/B — uploads attachments to the draft between CreateDraft
 // and SendDraft so they ride on the same send call.
+//
+// The recipient allowlist is checked before CreateDraft, and a draft
+// this call created is discarded if anything fails before SendDraft,
+// so a refused or failed send leaves nothing behind in Drafts.
 func sendCompose(ctx mcp.Context, deps Deps, toolName, parentID string, in sendInput) (*mcp.ToolResult, error) {
+	recipients := allRecipients(in.To, in.CC, in.BCC)
+	if bad := allowlistViolation(deps, toolName, mcpCallerFromContext(ctx), recipients); bad != "" {
+		return mcp.ErrorResult("%s denied: recipient %s not on allowlist", toolName, bad), nil
+	}
 	decoded, err := decodeAndValidateAttachments(deps, in.Attachments)
 	if err != nil {
 		return mcp.ErrorResult("%s: %v", toolName, err), nil
@@ -399,11 +428,32 @@ func sendCompose(ctx mcp.Context, deps Deps, toolName, parentID string, in sendI
 	if err != nil {
 		return mcp.ErrorResult("%s: create draft: %v", toolName, err), nil
 	}
+	discard := func() { discardDraft(ctx.Std, deps, draft.ID) }
 	attKeys, err := uploadAttachmentsAndCollectKeys(ctx.Std, deps, addrKR, draft.ID, decoded)
 	if err != nil {
+		discard()
 		return mcp.ErrorResult("%s: %v", toolName, err), nil
 	}
-	return finalizeSend(ctx, deps, toolName, addrKR, draft, tpl, mimeType, allRecipients(in.To, in.CC, in.BCC), attKeys)
+	return finalizeSend(ctx, deps, toolName, addrKR, draft, tpl, mimeType, recipients, attKeys, discard)
+}
+
+// discardDraftTimeout bounds the cleanup of an unsent draft.
+const discardDraftTimeout = 10 * time.Second
+
+// discardDraft permanently deletes a draft that THIS call created and
+// never sent, after a failure between CreateDraft and SendDraft. It
+// holds only what the call itself wrote seconds earlier, so there is
+// nothing of the user's to keep, and leaving it would park a
+// possibly-injected message in Drafts one click from being sent. Never
+// used on a draft the call didn't create. Best effort: it runs on a
+// context detached from the call's (which may be what failed).
+func discardDraft(ctx context.Context, deps Deps, draftID string) {
+	if deps.Session == nil || deps.Session.Client == nil || draftID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), discardDraftTimeout)
+	defer cancel()
+	_ = deps.Session.Client.DeleteMessage(ctx, draftID)
 }
 
 // sendDraftByID is mail_send_draft: load draft, send.
@@ -468,7 +518,9 @@ func sendDraftByID(ctx mcp.Context, deps Deps, toolName, draftID string) (*mcp.T
 		return mcp.ErrorResult("%s: recover draft attachment keys: %v", toolName, err), nil
 	}
 
-	return finalizeSend(ctx, deps, toolName, addrKR, draft, tpl, mimeType, recipients, attKeys)
+	// The draft is the user's (or was approved as it stands): never
+	// discard it on failure.
+	return finalizeSend(ctx, deps, toolName, addrKR, draft, tpl, mimeType, recipients, attKeys, nil)
 }
 
 // recoverDraftAttachmentKeys returns the (attachment_id → session
@@ -502,7 +554,8 @@ func recoverDraftAttachmentKeys(addrKR *crypto.KeyRing, draft gpa.Message) (map[
 // builds the recipient lists, calls sendCompose with ParentID.
 // Phase 8/B — accepts attachments and forwards them through
 // sendCompose's upload + send path.
-func sendReply(ctx mcp.Context, deps Deps, toolName, parentID string, replyAll bool, bodyText, bodyHTML string, attachments []sendAttachmentInput) (*mcp.ToolResult, error) {
+func sendReply(ctx mcp.Context, deps Deps, toolName string, replyAll bool, in replyInput) (*mcp.ToolResult, error) {
+	parentID := in.InReplyTo
 	// Issue #116 — reply from the parent the approval dialog was
 	// rendered from; fetch only when no dialog ran (policy: allow).
 	parent, ok := ctx.Snapshot.(gpa.Message)
@@ -518,9 +571,9 @@ func sendReply(ctx mcp.Context, deps Deps, toolName, parentID string, replyAll b
 		Subject:     replySubject(parent.Subject),
 		To:          to,
 		CC:          cc,
-		BodyText:    bodyText,
-		BodyHTML:    bodyHTML,
-		Attachments: attachments,
+		BodyText:    in.BodyText,
+		BodyHTML:    in.BodyHTML,
+		Attachments: in.Attachments,
 	})
 }
 
@@ -555,8 +608,13 @@ func sendForward(ctx mcp.Context, deps Deps, in forwardInput) (*mcp.ToolResult, 
 		})
 	}
 
-	// Parent-attachment carryover path. Pre-validate the new
-	// attachments first so we fail fast.
+	// Parent-attachment carryover path. Check the allowlist and
+	// pre-validate the new attachments first so we fail fast, before
+	// any draft exists.
+	recipients := allRecipients(in.To, in.CC, in.BCC)
+	if bad := allowlistViolation(deps, "mail_forward", mcpCallerFromContext(ctx), recipients); bad != "" {
+		return mcp.ErrorResult("mail_forward denied: recipient %s not on allowlist", bad), nil
+	}
 	newDecoded, err := decodeAndValidateAttachments(deps, in.Attachments)
 	if err != nil {
 		return mcp.ErrorResult("mail_forward: %v", err), nil
@@ -590,6 +648,7 @@ func sendForward(ctx mcp.Context, deps Deps, in forwardInput) (*mcp.ToolResult, 
 	if err != nil {
 		return mcp.ErrorResult("mail_forward: create draft: %v", err), nil
 	}
+	discard := func() { discardDraft(ctx.Std, deps, draft.ID) }
 
 	// After CreateDraft the parent attachments are server-side
 	// already; recover their session keys so they fan out per
@@ -597,16 +656,19 @@ func sendForward(ctx mcp.Context, deps Deps, in forwardInput) (*mcp.ToolResult, 
 	// draft (re-fetch it to get fresh Attachments).
 	freshDraft, err := deps.Session.Client.GetMessage(ctx.Std, draft.ID)
 	if err != nil {
+		discard()
 		return mcp.ErrorResult("mail_forward: refresh draft: %v", err), nil
 	}
 	parentAttKeys, err := recoverDraftAttachmentKeys(addrKR, freshDraft)
 	if err != nil {
+		discard()
 		return mcp.ErrorResult("mail_forward: recover draft keys: %v", err), nil
 	}
 
 	// Upload any NEW attachments alongside.
 	newAttKeys, err := uploadAttachmentsAndCollectKeys(ctx.Std, deps, addrKR, draft.ID, newDecoded)
 	if err != nil {
+		discard()
 		return mcp.ErrorResult("mail_forward: %v", err), nil
 	}
 
@@ -619,7 +681,7 @@ func sendForward(ctx mcp.Context, deps Deps, in forwardInput) (*mcp.ToolResult, 
 		merged[k] = v
 	}
 
-	return finalizeSend(ctx, deps, "mail_forward", addrKR, draft, tpl, mimeType, allRecipients(in.To, in.CC, in.BCC), merged)
+	return finalizeSend(ctx, deps, "mail_forward", addrKR, draft, tpl, mimeType, recipients, merged, discard)
 }
 
 // reencryptParentKeyPackets reads each parent attachment's
@@ -683,7 +745,19 @@ func decryptDraftBody(addrKR *crypto.KeyRing, armored string) (string, error) {
 // tool that ends up calling SendDraft must pass through this
 // function, and every call validates against the active policy
 // before any encryption or network call to /mail/v4/send.
-func finalizeSend(ctx mcp.Context, deps Deps, toolName string, addrKR *crypto.KeyRing, draft gpa.Message, tpl gpa.DraftTemplate, mimeType string, recipients []string, attKeys map[string]*crypto.SessionKey) (*mcp.ToolResult, error) {
+//
+// discard, when non-nil, is called on every failure before SendDraft:
+// callers that created the draft themselves pass discardDraft so a
+// refused or failed send leaves no orphan draft. It is NOT called when
+// SendDraft itself errors — the send may have gone through, and the
+// message would then be the Sent copy.
+func finalizeSend(ctx mcp.Context, deps Deps, toolName string, addrKR *crypto.KeyRing, draft gpa.Message, tpl gpa.DraftTemplate, mimeType string, recipients []string, attKeys map[string]*crypto.SessionKey, discard func()) (*mcp.ToolResult, error) {
+	fail := func(format string, args ...any) (*mcp.ToolResult, error) {
+		if discard != nil {
+			discard()
+		}
+		return mcp.ErrorResult(format, args...), nil
+	}
 	// Normalize the recipients we got from wherever (raw args via
 	// allRecipients, draft fetch via addressStrings, reply build) so
 	// the allowlist comparison sees the same shape extractSendRecipients
@@ -695,21 +769,21 @@ func finalizeSend(ctx mcp.Context, deps Deps, toolName string, addrKR *crypto.Ke
 	if deps.Policy != nil {
 		if _, pol := deps.Policy.Decide(toolName, nil, mcpCallerFromContext(ctx)); pol != nil && len(pol.AllowedRecipients) > 0 {
 			if bad := firstDisallowedRecipient(normalized, pol.AllowedRecipients); bad != "" {
-				return mcp.ErrorResult("%s denied: recipient %s not on allowlist", toolName, bad), nil
+				return fail("%s denied: recipient %s not on allowlist", toolName, bad)
 			}
 		}
 	}
 
 	prefs, err := buildSendPreferences(ctx.Std, deps, normalized, mimeType)
 	if err != nil {
-		return mcp.ErrorResult("%s: build send preferences: %v", toolName, err), nil
+		return fail("%s: build send preferences: %v", toolName, err)
 	}
 	req := gpa.SendDraftReq{}
 	if attKeys == nil {
 		attKeys = map[string]*crypto.SessionKey{}
 	}
 	if err := req.AddTextPackage(addrKR, tpl.Body, mimeTypeForSend(mimeType), prefs, attKeys); err != nil {
-		return mcp.ErrorResult("%s: build text package: %v", toolName, err), nil
+		return fail("%s: build text package: %v", toolName, err)
 	}
 	sent, err := deps.Session.Client.SendDraft(ctx.Std, draft.ID, req)
 	if err != nil {

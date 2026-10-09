@@ -73,9 +73,16 @@ tools:
   mail_draft_create:
     decision: allow
     description: "Create a draft (no external effect)"
+  # A draft is a message waiting to be sent, often later from the
+  # Proton web UI where nobody re-reads every header. Editing one
+  # (adding a BCC, rewriting the body) is therefore as consequential
+  # as the send itself: confirm with the literal recipient changes and
+  # body excerpt, every time.
   mail_draft_update:
-    decision: allow
-    description: "Update a draft"
+    decision: prompt
+    confirm: true
+    ttl: 0
+    description: "Update a draft (the dialog lists recipients added/removed and the new body)"
   mail_draft_delete:
     decision: prompt
     ttl: 5m

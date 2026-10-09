@@ -141,7 +141,7 @@ func TestSendDraftDialog_HostileSubject(t *testing.T) {
 	d.Subject = spoofSubject
 	d.ToList = []*mail.Address{{Name: "Your Boss <boss@corp.com>", Address: "attacker@evil.com"}}
 	d.BCCList = []*mail.Address{{Address: "carol@x.com"}}
-	_, body, err := sendApprovalDialog("mail_send_draft", draftPromptBody(d))
+	_, body, err := sendApprovalDialog("mail_send_draft", draftPromptBody(d, "hello"))
 	if err != nil {
 		t.Fatalf("dialog: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestReplyDialog_HostileParentSubject(t *testing.T) {
 	deps := Deps{Session: &proton.Session{Addresses: []gpa.Address{{Email: "me@proton.me"}}}}
 
 	for _, all := range []bool{false, true} {
-		_, body, err := sendApprovalDialog("mail_reply", replyPromptBody(deps, parent, parent.ID, all, nil))
+		_, body, err := sendApprovalDialog("mail_reply", replyPromptBody(deps, parent, all, replyInput{InReplyTo: parent.ID}))
 		if err != nil {
 			t.Fatalf("replyAll=%v: dialog: %v", all, err)
 		}

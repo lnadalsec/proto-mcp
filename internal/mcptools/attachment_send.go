@@ -187,31 +187,24 @@ func uploadAttachmentsAndCollectKeys(
 }
 
 // attachmentsSummary formats a one-line summary for the Touch ID
-// prompt body. Sanitized filenames; sizes in a human-readable form;
-// truncates after 3 with "and N more" suffix beyond.
+// prompt body: EVERY attachment, each name capped, sizes in a
+// human-readable form. It used to stop after three ("and N more"),
+// which let a fourth file ride along unnamed; a list too long to show
+// now makes sendApprovalDialog refuse the call instead (issue #125).
 //
 // Example outputs:
 //
 //	"Attachments: report.pdf (2.4 MB)"
 //	"Attachments: report.pdf (2.4 MB), photo.jpg (850 KB)"
-//	"Attachments: a.pdf (1 KB), b.pdf (1 KB), c.pdf (1 KB) and 5 more"
 func attachmentsSummary(decoded []decodedAttachment) string {
 	if len(decoded) == 0 {
 		return ""
 	}
-	const max = 3
-	parts := make([]string, 0, max)
-	for i, d := range decoded {
-		if i >= max {
-			break
-		}
+	parts := make([]string, 0, len(decoded))
+	for _, d := range decoded {
 		parts = append(parts, fmt.Sprintf("%s (%s)", capField(d.Filename, promptNameMaxRunes), humanBytes(int64(len(d.Plain)))))
 	}
-	out := "Attachments: " + strings.Join(parts, ", ")
-	if len(decoded) > max {
-		out += fmt.Sprintf(" and %d more", len(decoded)-max)
-	}
-	return out
+	return "Attachments: " + strings.Join(parts, ", ")
 }
 
 // humanBytes formats a byte count as a short human-readable string.

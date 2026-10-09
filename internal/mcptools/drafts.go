@@ -1,10 +1,12 @@
 package mcptools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/ProtonMail/gluon/rfc822"
@@ -136,7 +138,10 @@ func mailDraftCreate(deps Deps) mcp.Tool {
 func mailDraftUpdate(deps Deps) mcp.Tool {
 	return mcp.Tool{
 		Name: "mail_draft_update",
-		Description: "Update an existing draft. Any field you don't pass is preserved. body_html still runs through outbound sanitization. " +
+		Description: "Update an existing draft. Any field you don't pass is preserved, including the draft's sender " +
+			"address and, when no body is passed, its body exactly as stored. A new body_html runs through outbound " +
+			"sanitization. Requires the user's approval: the dialog lists the draft's recipients after the edit, " +
+			"what was added or removed, and an excerpt of a new body. " +
 			"Optional `attachments` array uploads ADDITIONAL files (does not replace existing attachments on the draft — for that, mail_draft_delete + mail_draft_create).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -154,6 +159,10 @@ func mailDraftUpdate(deps Deps) mcp.Tool {
 			"additionalProperties": false
 		}`),
 		OutputSchema: json.RawMessage(draftResultSchema),
+		// The dialog and the update share one fetch of the draft (the
+		// issue #116 design): the handler refuses if the draft changed
+		// after the dialog was rendered.
+		PromptSnapshot: draftUpdatePromptSnapshot(deps),
 		Handler: func(ctx mcp.Context, raw json.RawMessage) (*mcp.ToolResult, error) {
 			var in draftInputUpdate
 			if err := json.Unmarshal(raw, &in); err != nil {
@@ -174,41 +183,19 @@ func mailDraftUpdate(deps Deps) mcp.Tool {
 			if err != nil {
 				return mcp.ErrorResult("mail_draft_update: fetch current: %v", err), nil
 			}
+			if approved, ok := ctx.Snapshot.(gpa.Message); ok {
+				if what := draftChange(approved, current); what != "" {
+					return mcp.ErrorResult("mail_draft_update refused: the draft's %s changed after the approval dialog was shown. Nothing was changed; call mail_draft_update again.", what), nil
+				}
+			}
 
-			subject := pickStr(in.Subject, current.Subject)
-			to := pickAddrList(in.To, current.ToList)
-			cc := pickAddrList(in.CC, current.CCList)
-			bcc := pickAddrList(in.BCC, current.BCCList)
-			_, addrKR, err := senderKeyring(deps)
+			plan, err := planDraftUpdate(deps, current, in)
 			if err != nil {
+				var pe *mcp.Error
+				if errors.As(err, &pe) {
+					return nil, pe
+				}
 				return mcp.ErrorResult("mail_draft_update: %v", err), nil
-			}
-
-			// body_text / body_html / nothing — if nothing supplied, keep
-			// the existing body. Issue #124: current.Body is armored
-			// CIPHERTEXT (CreateDraft encrypted it to us), so decrypt it
-			// back to plaintext — as sendDraftByID does (PROTO-125) — and
-			// keep the draft's MIME type. Feeding the ciphertext through
-			// as text replaced the body with its own PGP armor.
-			text, html := in.BodyText, in.BodyHTML
-			if text == "" && html == "" {
-				plain, err := decryptDraftBody(addrKR, current.Body)
-				if err != nil {
-					return mcp.ErrorResult("mail_draft_update: decrypt current body: %v", err), nil
-				}
-				if string(current.MIMEType) == "text/html" {
-					html = plain
-				} else {
-					text = plain
-				}
-			}
-
-			toStrs := toEmailStrings(to)
-			ccStrs := toEmailStrings(cc)
-			bccStrs := toEmailStrings(bcc)
-			tpl, mimeType, err := buildDraftTemplate(deps, subject, toStrs, ccStrs, bccStrs, text, html)
-			if err != nil {
-				return nil, mcp.NewError(mcp.CodeInvalidParams, "mail_draft_update: "+err.Error())
 			}
 
 			decoded, err := decodeAndValidateAttachments(deps, in.Attachments)
@@ -216,8 +203,8 @@ func mailDraftUpdate(deps Deps) mcp.Tool {
 				return mcp.ErrorResult("mail_draft_update: %v", err), nil
 			}
 
-			msg, err := deps.Session.Client.UpdateDraft(ctx.Std, in.DraftID, addrKR, gpa.UpdateDraftReq{
-				Message: tpl,
+			msg, err := deps.Session.Client.UpdateDraft(ctx.Std, in.DraftID, plan.kr, gpa.UpdateDraftReq{
+				Message: plan.tpl,
 			})
 			if err != nil {
 				return mcp.ErrorResult("mail_draft_update: %v", err), nil
@@ -226,7 +213,7 @@ func mailDraftUpdate(deps Deps) mcp.Tool {
 			// Phase 8/B — additive attachment upload. Existing
 			// attachments on the draft are preserved by the SDK;
 			// these get added.
-			if _, err := uploadAttachmentsAndCollectKeys(ctx.Std, deps, addrKR, msg.ID, decoded); err != nil {
+			if _, err := uploadAttachmentsAndCollectKeys(ctx.Std, deps, plan.kr, msg.ID, decoded); err != nil {
 				return mcp.ErrorResult("mail_draft_update: %v", err), nil
 			}
 
@@ -237,10 +224,194 @@ func mailDraftUpdate(deps Deps) mcp.Tool {
 				To:       addressStrings(msg.ToList),
 				CC:       addressStrings(msg.CCList),
 				BCC:      addressStrings(msg.BCCList),
-				MIMEType: mimeType,
+				MIMEType: string(plan.tpl.MIMEType),
 			})
 		},
 	}
+}
+
+// draftUpdatePlan is what mail_draft_update writes, computed by
+// planDraftUpdate from the current draft and the call's arguments.
+// The approval dialog and the handler both build it the same way.
+type draftUpdatePlan struct {
+	tpl         gpa.DraftTemplate
+	kr          *crypto.KeyRing
+	bodyChanged bool
+}
+
+// planDraftUpdate merges a mail_draft_update call into the current
+// draft. Everything the call doesn't name is kept as stored:
+//
+//   - the sender: a draft the user wrote from a secondary address
+//     stays on that address (and that address's keyring encrypts it);
+//   - the body, verbatim, when no body is passed. Only a NEW body_html
+//     goes through sanitize.Outbound — re-sanitizing the stored body
+//     would strip the links, images, styles and tables of a draft the
+//     user composed in Proton's editor.
+//
+// An invalid recipient is an *mcp.Error (CodeInvalidParams), never
+// silently dropped.
+func planDraftUpdate(deps Deps, current gpa.Message, in draftInputUpdate) (draftUpdatePlan, error) {
+	kr, err := draftKeyring(deps, current)
+	if err != nil {
+		return draftUpdatePlan{}, err
+	}
+	sender := current.Sender
+	if sender == nil || sender.Address == "" {
+		if sender, err = primarySenderAddress(deps); err != nil {
+			return draftUpdatePlan{}, err
+		}
+	}
+	lists := [3][]*mail.Address{current.ToList, current.CCList, current.BCCList}
+	for i, arg := range [3][]string{in.To, in.CC, in.BCC} {
+		if len(arg) == 0 {
+			continue
+		}
+		parsed, err := parseAddrList(arg)
+		if err != nil {
+			return draftUpdatePlan{}, mcp.NewError(mcp.CodeInvalidParams,
+				"mail_draft_update: "+[3]string{"to", "cc", "bcc"}[i]+": "+err.Error())
+		}
+		lists[i] = parsed
+	}
+
+	plan := draftUpdatePlan{kr: kr}
+	var body, mimeType string
+	if in.BodyText != "" || in.BodyHTML != "" {
+		body, mimeType = outgoingBody(in.BodyText, in.BodyHTML)
+		plan.bodyChanged = true
+	} else {
+		// Issue #124: current.Body is armored CIPHERTEXT (CreateDraft
+		// encrypted it to us), so decrypt it back to plaintext — as
+		// sendDraftByID does (PROTO-125) — and keep the MIME type.
+		if body, err = decryptDraftBody(kr, current.Body); err != nil {
+			return draftUpdatePlan{}, fmt.Errorf("decrypt current body: %w", err)
+		}
+		mimeType = "text/plain"
+		if string(current.MIMEType) == "text/html" {
+			mimeType = "text/html"
+		}
+	}
+	plan.tpl = gpa.DraftTemplate{
+		Subject:    pickStr(in.Subject, current.Subject),
+		Sender:     sender,
+		ToList:     lists[0],
+		CCList:     lists[1],
+		BCCList:    lists[2],
+		Body:       body,
+		MIMEType:   rfc822.MIMEType(mimeType),
+		ExternalID: current.ExternalID,
+	}
+	return plan, nil
+}
+
+// draftKeyring is the keyring of the address a draft belongs to,
+// falling back to the primary address when the draft names none we
+// hold a keyring for.
+func draftKeyring(deps Deps, d gpa.Message) (*crypto.KeyRing, error) {
+	if deps.Session != nil && d.AddressID != "" {
+		if kr, ok := deps.Session.AddrKRs[d.AddressID]; ok && kr != nil {
+			return kr, nil
+		}
+	}
+	_, kr, err := senderKeyring(deps)
+	return kr, err
+}
+
+// draftUpdatePromptSnapshot is mail_draft_update's PromptSnapshot. A
+// draft is a message waiting to be sent — often later from the Proton
+// web UI, where nobody re-reads every header — so an edit that quietly
+// adds a BCC or rewrites the body is a send the user never approved.
+// The dialog shows the recipients as they will be, what the call adds
+// or removes, and the new body.
+func draftUpdatePromptSnapshot(deps Deps) func(context.Context, json.RawMessage) (string, string, any, error) {
+	return func(ctx context.Context, args json.RawMessage) (string, string, any, error) {
+		var in draftInputUpdate
+		_ = json.Unmarshal(args, &in)
+		if in.DraftID == "" {
+			return "", "", nil, errors.New("draft_id is required")
+		}
+		current, err := fetchForPrompt(ctx, deps, in.DraftID)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("fetch draft: %w", err)
+		}
+		plan, err := planDraftUpdate(deps, current, in)
+		if err != nil {
+			return "", "", nil, err
+		}
+		title, body, err := sendApprovalDialog("mail_draft_update",
+			draftUpdatePromptBody(deps, current, plan, in.Attachments))
+		if err != nil {
+			return "", "", nil, err
+		}
+		return title, body, current, nil
+	}
+}
+
+// draftUpdatePromptBody renders the mail_draft_update dialog: the
+// recipients after the edit (bare addresses, all three lines, issue
+// #125 rules), every recipient added or removed, the subject, the new
+// body or "unchanged", and any attachments being added.
+func draftUpdatePromptBody(deps Deps, current gpa.Message, plan draftUpdatePlan, attachments []sendAttachmentInput) string {
+	t := plan.tpl
+	parts := []string{"Edit draft " + capField(current.ID, promptNameMaxRunes) +
+		" (from " + joinAddrs(addressStrings([]*mail.Address{t.Sender})) + ")"}
+	parts = append(parts, recipientLines(
+		joinAddrs(addressStrings(t.ToList)),
+		joinAddrs(addressStrings(t.CCList)),
+		joinAddrs(addressStrings(t.BCCList)),
+	)...)
+	before := [3][]*mail.Address{current.ToList, current.CCList, current.BCCList}
+	after := [3][]*mail.Address{t.ToList, t.CCList, t.BCCList}
+	var changes []string
+	for i, kind := range [3]string{"To", "CC", "BCC"} {
+		if added := addrDiff(addressStrings(after[i]), addressStrings(before[i])); len(added) > 0 {
+			changes = append(changes, "added to "+kind+": "+joinAddrs(added))
+		}
+		if removed := addrDiff(addressStrings(before[i]), addressStrings(after[i])); len(removed) > 0 {
+			changes = append(changes, "removed from "+kind+": "+joinAddrs(removed))
+		}
+	}
+	if len(changes) == 0 {
+		parts = append(parts, "Recipient changes: none")
+	} else {
+		parts = append(parts, "Recipient changes: "+strings.Join(changes, "; "))
+	}
+	subj := "Subject: " + capField(t.Subject, promptSubjectMaxRunes)
+	if t.Subject != current.Subject {
+		subj += " (was: " + capField(current.Subject, promptSubjectMaxRunes) + ")"
+	}
+	parts = append(parts, subj)
+	if plan.bodyChanged {
+		parts = append(parts, "New "+bodyExcerptLine(t.Body, string(t.MIMEType)))
+	} else {
+		parts = append(parts, "Body: unchanged")
+	}
+	if decoded, err := decodeAndValidateAttachments(deps, attachments); err == nil {
+		if s := attachmentsSummary(decoded); s != "" {
+			parts = append(parts, "Adding "+s)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// addrDiff returns the addresses in a that are not in b, compared
+// case-insensitively.
+func addrDiff(a, b []string) []string {
+	var out []string
+	for _, x := range a {
+		found := false
+		for _, y := range b {
+			if strings.EqualFold(x, y) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 func mailDraftDelete(deps Deps) mcp.Tool {
@@ -349,18 +520,25 @@ func mailDraftList(deps Deps) mcp.Tool {
 	}
 }
 
-// buildDraftTemplate is the shared body-building path. Handles
-// outbound HTML sanitization and the MIME-type decision (plain
-// text when no HTML, HTML when html is provided — and if both
-// supplied, HTML wins since rich body is more expressive).
-func buildDraftTemplate(deps Deps, subject string, to, cc, bcc []string, bodyText, bodyHTML string) (gpa.DraftTemplate, string, error) {
-	body := bodyText
-	mimeType := "text/plain"
+// outgoingBody decides the body a compose call will carry: sanitized
+// HTML when body_html is given (it wins over body_text — the rich body
+// is more expressive), else body_text as plain text. The send dialogs
+// render their body excerpt from this same function, so the excerpt is
+// of exactly what is sent.
+func outgoingBody(bodyText, bodyHTML string) (body, mimeType string) {
 	if bodyHTML != "" {
 		// SECURITY: outbound sanitization. Same allowlist as inbound.
-		body = sanitize.Outbound(bodyHTML)
-		mimeType = "text/html"
+		return sanitize.Outbound(bodyHTML), "text/html"
 	}
+	return bodyText, "text/plain"
+}
+
+// buildDraftTemplate is the shared body-building path for new
+// messages: outbound HTML sanitization and the MIME-type decision
+// (outgoingBody), the primary address as sender, and parsed
+// recipient lists.
+func buildDraftTemplate(deps Deps, subject string, to, cc, bcc []string, bodyText, bodyHTML string) (gpa.DraftTemplate, string, error) {
+	body, mimeType := outgoingBody(bodyText, bodyHTML)
 
 	sender, err := primarySenderAddress(deps)
 	if err != nil {
@@ -436,25 +614,6 @@ func parseAddrList(addrs []string) ([]*mail.Address, error) {
 		out = append(out, a)
 	}
 	return out, nil
-}
-
-func toEmailStrings(addrs []*mail.Address) []string {
-	out := make([]string, 0, len(addrs))
-	for _, a := range addrs {
-		if a == nil {
-			continue
-		}
-		out = append(out, a.Address)
-	}
-	return out
-}
-
-func pickAddrList(preferred []string, fallback []*mail.Address) []*mail.Address {
-	if len(preferred) > 0 {
-		parsed, _ := parseAddrList(preferred)
-		return parsed
-	}
-	return fallback
 }
 
 func addressStrings(addrs []*mail.Address) []string {

@@ -65,7 +65,8 @@ colour-palette validation on create/update.
 ### Drafts (4)
 
 `mail_draft_create`, `mail_draft_update`, `mail_draft_delete`,
-`mail_draft_list`.
+`mail_draft_list`. `mail_draft_update` prompts (TTL 0) with the recipients
+added/removed and the new body: a draft is a pending send.
 
 ### Send (5)
 
@@ -73,7 +74,7 @@ colour-palette validation on create/update.
 |---|---|
 | `mail_send` | Compose and send a new message. TTL 0 — always re-prompts. |
 | `mail_send_draft` | Send an existing draft. |
-| `mail_reply` | Reply to the sender. |
+| `mail_reply` | Reply to the sender (its Reply-To when set; the prompt says so). |
 | `mail_reply_all` | Reply to everyone. |
 | `mail_forward` | Forward a message (carries attachments). |
 

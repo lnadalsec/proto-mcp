@@ -59,7 +59,7 @@ func TestDraftPromptBody_ShowsEverythingAndResistsInjection(t *testing.T) {
 	for i := 2; i <= 5; i++ {
 		d.Attachments = append(d.Attachments, gpa.Attachment{ID: "a", Name: "file" + string(rune('0'+i)) + ".txt", Size: 10})
 	}
-	body := draftPromptBody(d)
+	body := draftPromptBody(d, "hello")
 	for _, want := range []string{"Subject: hi BCC: evil@x.com", "To: alice@x.com", "CC: bob@x.com", "BCC: carol@x.com", "q3.pdf", "file5.txt"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("prompt body missing %q:\n%s", want, body)
