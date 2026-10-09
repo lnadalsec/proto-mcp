@@ -205,13 +205,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # OSV-Scanner appelle la toolchain Go pour l'analyse d'appels de go.mod.
-      - name: Installation de Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
       - name: Installation d'OSV-Scanner
         run: |
           binaire="$RUNNER_TEMP/osv-scanner"
@@ -222,6 +215,9 @@ jobs:
           osv-scanner --version
 
       # Bloquant : score CVSS >= 7, score inconnu ou paquet malveillant (MAL-).
+      # Sans analyse d'appels : elle compile le code, ce qui échoue sous Linux
+      # (keystore cgo macOS). L'atteignabilité est jugée par govulncheck (macOS) ;
+      # ici, tout avis sur une dépendance compte, atteignable ou non.
       # Exceptions datées : osv-scanner.toml à la racine (IgnoredVulns + ignoreUntil).
       - name: OSV-Scanner sur go.mod
         id: osv
@@ -229,8 +225,8 @@ jobs:
         run: |
           mkdir -p sarif
           code=0
-          osv-scanner scan source --lockfile go.mod --format sarif --output-file sarif/osv-scanner.sarif || code=$?
-          osv-scanner scan source --lockfile go.mod --format json --output-file "$RUNNER_TEMP/osv.json" || code=$?
+          osv-scanner scan source --no-call-analysis=go --lockfile go.mod --format sarif --output-file sarif/osv-scanner.sarif || code=$?
+          osv-scanner scan source --no-call-analysis=go --lockfile go.mod --format json --output-file "$RUNNER_TEMP/osv.json" || code=$?
           if [ "$code" -gt 1 ]; then
             echo "::error title=OSV-Scanner::erreur de l'outil (code $code)"
             exit "$code"
