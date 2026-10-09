@@ -123,11 +123,10 @@ func TestTryWithHV_NoRetryOnSuccess(t *testing.T) {
 	}
 }
 
-// TestTryWithHV_CaptchaOnlyRejected ensures a captcha-only offer fails
-// fast with a message pointing at the browser-trust workaround, rather
-// than invoking AskHVBrowserConfirm — protonmcp has no way to render or
-// solve a captcha challenge.
-func TestTryWithHV_CaptchaOnlyRejected(t *testing.T) {
+// TestTryWithHV_CaptchaOnlyWithoutLinkRejected: a captcha-only offer
+// with no usable verify.proton.me link fails fast with the browser-trust
+// workaround — there is nowhere to send the user to solve it.
+func TestTryWithHV_CaptchaOnlyWithoutLinkRejected(t *testing.T) {
 	captchaErr := &gpa.APIError{
 		Status: 422,
 		Code:   gpa.HumanVerificationRequired,
@@ -138,7 +137,7 @@ func TestTryWithHV_CaptchaOnlyRejected(t *testing.T) {
 	}
 	creds := &Credentials{
 		AskHVBrowserConfirm: func(context.Context, string, bool) error {
-			t.Fatal("AskHVBrowserConfirm should not be called for a captcha-only offer")
+			t.Fatal("AskHVBrowserConfirm should not be called without a verification link")
 			return nil
 		},
 	}
@@ -146,7 +145,49 @@ func TestTryWithHV_CaptchaOnlyRejected(t *testing.T) {
 		return 0, captchaErr
 	})
 	if err == nil {
-		t.Fatal("expected an error for a captcha-only offer, got nil")
+		t.Fatal("expected an error for a captcha-only offer without a link, got nil")
+	}
+}
+
+// TestTryWithHV_CaptchaViaWebLink: when Proton returns a verify.proton.me
+// link for a captcha, the user solves it in the browser and the call is
+// retried with Proton's own token, as for the ownership methods.
+func TestTryWithHV_CaptchaViaWebLink(t *testing.T) {
+	const link = "https://verify.proton.me/?methods=captcha&token=cap-tok"
+	captchaErr := &gpa.APIError{
+		Status: 422,
+		Code:   gpa.HumanVerificationRequired,
+		Details: gpa.ErrDetails(`{
+			"HumanVerificationToken": "cap-tok",
+			"HumanVerificationMethods": ["captcha"],
+			"WebUrl": "` + link + `"
+		}`),
+	}
+	var shown string
+	creds := &Credentials{
+		AskHVBrowserConfirm: func(_ context.Context, webURL string, _ bool) error {
+			shown = webURL
+			return nil
+		},
+	}
+	var retried *gpa.APIHVDetails
+	calls := 0
+	got, err := tryWithHV(context.Background(), creds, func(hv *gpa.APIHVDetails) (int, error) {
+		calls++
+		if hv == nil {
+			return 0, captchaErr
+		}
+		retried = hv
+		return 7, nil
+	})
+	if err != nil || got != 7 {
+		t.Fatalf("tryWithHV = %d, %v; want 7, nil", got, err)
+	}
+	if shown != link {
+		t.Fatalf("user was shown %q, want %q", shown, link)
+	}
+	if calls != 2 || retried == nil || retried.Token != "cap-tok" {
+		t.Fatalf("retry: calls=%d hv=%+v; want one retry with Proton's token", calls, retried)
 	}
 }
 

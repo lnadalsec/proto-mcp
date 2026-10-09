@@ -459,10 +459,21 @@ func Login(ctx context.Context, mgr *gpa.Manager, creds *Credentials) (*Session,
 		return nil, errors.New("proton: email and password are required")
 	}
 
-	client, auth, err := mgr.NewClientWithLogin(ctx, creds.Email, creds.Password.Bytes())
+	// The SRP auth call itself is where Proton most often raises 9001
+	// (new device / network, or a client identity it doesn't trust yet),
+	// so it goes through the same browser verification as GetUser.
+	type loginResult struct {
+		client *gpa.Client
+		auth   gpa.Auth
+	}
+	lr, err := tryWithHV(ctx, creds, func(hv *gpa.APIHVDetails) (loginResult, error) {
+		c, a, err := mgr.NewClientWithLoginWithHVToken(ctx, creds.Email, creds.Password.Bytes(), hv)
+		return loginResult{client: c, auth: a}, err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("srp login: %w", err)
 	}
+	client, auth := lr.client, lr.auth
 
 	// Build the Session shell + install the AuthHandler immediately,
 	// before any subsequent API call. Proton can rotate tokens
@@ -619,8 +630,11 @@ func Login(ctx context.Context, mgr *gpa.Manager, creds *Credentials) (*Session,
 // 12087) because the token that comes back never matches what
 // verify.proton.me actually validated.
 //
-// Captcha-only offers aren't supported: solving a captcha needs a
-// browser-embedded challenge widget, not a URL a human can just visit.
+// A captcha offer goes through the same page: verify.proton.me renders
+// the challenge in the user's browser and the user solves it there, the
+// way Proton Bridge does it. Only when Proton returns no usable
+// verify.proton.me link is a captcha-only offer refused (we have
+// nowhere to send the user).
 func tryWithHV[T any](ctx context.Context, creds *Credentials, call func(*gpa.APIHVDetails) (T, error)) (T, error) {
 	result, err := call(nil)
 	for attempt := 1; ; attempt++ {
@@ -639,14 +653,14 @@ func tryWithHV[T any](ctx context.Context, creds *Credentials, call func(*gpa.AP
 		if hvErr != nil {
 			return result, fmt.Errorf("%w (also failed to parse HV details: %v)", err, hvErr)
 		}
-		if !hasOwnershipMethod(hv.Methods) {
+		webURL := hvWebURL(apiErr.Details)
+		if !hasOwnershipMethod(hv.Methods) && webURL == "" {
 			return result, fmt.Errorf(
-				"proton: account requires human verification via %v, which protonmcp only supports through the browser-based ownership-email/ownership-sms flow (not captcha). "+
+				"proton: account requires human verification via %v, but Proton returned no verify.proton.me link to complete it in a browser. "+
 					"Log into mail.proton.me (or Proton Bridge) from this device/network once to establish trust, then retry: %w",
 				hv.Methods, err)
 		}
 
-		webURL := hvWebURL(apiErr.Details)
 		if creds.AskHVBrowserConfirm == nil {
 			if webURL == "" {
 				return result, fmt.Errorf("proton: human verification required, but no prompt is available (log in at https://mail.proton.me to clear it, then retry): %w", err)
