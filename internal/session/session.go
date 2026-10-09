@@ -103,36 +103,119 @@ func AcquireResumeOnly(ctx context.Context) (*Bundle, error) {
 	return bundle, nil
 }
 
+// Keystore / Proton seams. Package vars so tests can substitute fakes
+// for the Keychain and the network; production never reassigns them.
+var (
+	keystoreLoad   = keystore.Load
+	keystoreSave   = keystore.Save
+	keystoreDelete = keystore.Delete
+	resumeSession  = protonclient.Resume
+)
+
 // TryResume opens an existing Keychain entry, rebuilds the jar +
 // Manager, and calls Resume. Returns keystore.ErrNotFound when
 // there's nothing to resume so callers can fall through to
 // interactive login (which lives in cmd/protonmcp).
+//
+// Concurrency with other processes (daemon vs CLI sharing one
+// Keychain entry):
+//   - resumes are serialized by an flock (lockResume), so two
+//     processes never spend the same single-use refresh token;
+//   - an ErrSessionExpired only wipes the Keychain entry if the entry
+//     STILL holds the tokens that just failed. If another process
+//     rotated them meanwhile (e.g. the daemon's background refresh,
+//     which is not under the lock), we retry once with the fresh
+//     tokens instead of deleting them.
 func TryResume(ctx context.Context) (*Bundle, error) {
-	stored, err := keystore.Load()
-	if err != nil {
-		return nil, err
+	unlock, lerr := lockResume(ctx)
+	if lerr != nil {
+		if ctx.Err() != nil {
+			return nil, lerr
+		}
+		slog.Warn("resume lock unavailable; resuming without cross-process serialization",
+			"err", lerr.Error())
+	} else {
+		defer unlock()
 	}
-	// SECURITY D10 / B-3: zero the salted-key-material slice on
-	// return. Resume() copies what it needs into the Session before
-	// the function returns, so wiping the local is safe.
-	defer stored.Zero()
 
+	for attempt := 0; ; attempt++ {
+		stored, err := keystoreLoad()
+		if err != nil {
+			return nil, err
+		}
+		usedUID, usedRefresh := stored.UID, stored.RefreshToken
+		bundle, err := resumeFromStored(ctx, &stored)
+		stored.Zero()
+		if err == nil {
+			return bundle, nil
+		}
+		if !errors.Is(err, protonclient.ErrSessionExpired) {
+			return nil, err
+		}
+
+		// Proton says the tokens are dead. Before wiping, make sure
+		// they are still the ones in the Keychain.
+		cur, cerr := keystoreLoad()
+		if cerr != nil {
+			// Already gone (another process logged out) or unreadable:
+			// either way, don't delete what we can't see.
+			return nil, err
+		}
+		rotated := cur.UID != usedUID || cur.RefreshToken != usedRefresh
+		cur.Zero()
+		if !rotated {
+			_ = keystoreDelete()
+			return nil, err
+		}
+		if attempt >= 1 {
+			// Rotated under us twice in a row: leave the entry for its
+			// owner rather than looping or deleting it.
+			return nil, err
+		}
+		slog.Info("stored session was rotated by another process during resume; retrying with the new tokens")
+	}
+}
+
+// resumeFromStored runs one Resume attempt from a loaded Keychain
+// blob and, on success, persists the (possibly rotated) tokens and
+// wires the keystore sync hook.
+func resumeFromStored(ctx context.Context, stored *keystore.Live) (*Bundle, error) {
 	jar := protonclient.NewCookieJar()
 	protonclient.PreloadJar(jar, stored.Cookies)
 	mgr := protonclient.NewManager(jar)
 
-	sess, err := protonclient.Resume(ctx, mgr, protonclient.ResumeArgs{
+	// Persist a rotation that happens INSIDE Resume (auto-refresh on
+	// an expired access token) right away: if a later step of Resume
+	// fails transiently, the old refresh token is already burned and
+	// the rotated pair would otherwise be lost.
+	// SECURITY D10 / B-3: our own clone of the salted pass, zeroed when
+	// this attempt is over; the caller zeroes stored.
+	skp := stored.SaltedKeyPass.Clone()
+	defer skp.Zero()
+	email := stored.Email
+	onRotate := func(uid, accessToken, refreshToken string) {
+		if err := keystoreSave(keystore.Live{
+			Email:         email,
+			UID:           uid,
+			AccessToken:   accessToken,
+			RefreshToken:  refreshToken,
+			SaltedKeyPass: skp,
+			Cookies:       protonclient.JarCookies(jar),
+		}); err != nil {
+			slog.Warn("token rotation during resume not persisted", "err", err.Error())
+		}
+	}
+
+	sess, err := resumeSession(ctx, mgr, protonclient.ResumeArgs{
 		Email:         stored.Email,
 		UID:           stored.UID,
 		AccessToken:   stored.AccessToken,
 		RefreshToken:  stored.RefreshToken,
 		SaltedKeyPass: stored.SaltedKeyPass,
+		OnAuthUpdate:  onRotate,
 	})
 	if err != nil {
 		mgr.Close()
-		if errors.Is(err, protonclient.ErrSessionExpired) {
-			_ = keystore.Delete()
-		}
 		return nil, err
 	}
 
@@ -163,7 +246,7 @@ func Persist(b *Bundle) error {
 	// copy under authMu; we own it and zero it when done.
 	skp := b.Session.SaltedKeyPassCopy()
 	defer skp.Zero()
-	return keystore.Save(keystore.Live{
+	return keystoreSave(keystore.Live{
 		Email:         b.Session.Email,
 		UID:           b.Session.UID,
 		AccessToken:   access,
@@ -185,7 +268,7 @@ func WireKeystoreSync(b *Bundle) {
 		// race a Close()-driven Zero() of the shared backing array.
 		skp := b.Session.SaltedKeyPassCopy()
 		defer skp.Zero()
-		err := keystore.Save(keystore.Live{
+		err := keystoreSave(keystore.Live{
 			Email:         b.Session.Email,
 			UID:           uid,
 			AccessToken:   accessToken,
