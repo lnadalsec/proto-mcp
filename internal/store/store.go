@@ -58,8 +58,8 @@ type Store struct {
 // enforcement are enabled.
 func Open(path string) (*Store, error) {
 	if path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return nil, fmt.Errorf("create db dir: %w", err)
+		if err := prepareDBFile(path); err != nil {
+			return nil, err
 		}
 	}
 
@@ -77,26 +77,61 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	// Tighten perms on the on-disk SQLite files. The umask the process
-	// runs under should already make this 0o600, but be explicit —
-	// process umask can be unset by callers, and the -wal / -shm
-	// sidecar files may have been created with default modes by an
-	// older version of the binary. SECURITY M-2.
-	if path != ":memory:" {
-		for _, suffix := range []string{"", "-wal", "-shm"} {
-			p := path + suffix
-			if _, statErr := os.Stat(p); statErr == nil {
-				_ = os.Chmod(p, 0o600)
-			}
-		}
-	}
-
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
+	// Tighten perms on the on-disk SQLite files. SECURITY M-2. This
+	// runs after the migrations because the -wal / -shm sidecars only
+	// appear once the connection writes; before, they could be left at
+	// the umask default (0o644). SQLite creates later sidecars with the
+	// main file's mode, which prepareDBFile already made 0o600, but an
+	// older binary may have left looser ones behind.
+	if path != ":memory:" {
+		if err := chmodDBFiles(path); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+
 	return &Store{DB: db, Path: path}, nil
+}
+
+// prepareDBFile creates the parent directory (0o700) and an empty
+// database file (0o600) if they don't exist yet, so neither ever
+// exists with umask-derived modes. A directory Open did not create is
+// left as is — the user may have pointed --db at a shared location.
+func prepareDBFile(path string) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create db dir: %w", err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return fmt.Errorf("chmod db dir: %w", err)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("create db file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("create db file: %w", err)
+	}
+	return nil
+}
+
+// chmodDBFiles sets 0o600 on the database and whichever of its -wal /
+// -shm sidecars exist.
+func chmodDBFiles(path string) error {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		p := path + suffix
+		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("chmod %s: %w", filepath.Base(p), err)
+		}
+	}
+	return nil
 }
 
 // buildDSN constructs a modernc.org/sqlite DSN for the given path with

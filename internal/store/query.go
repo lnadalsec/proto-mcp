@@ -10,11 +10,11 @@ import (
 // the right field; unknown prefixes (`foo:bar`) and bare terms
 // accumulate into the FTS5 MATCH expression.
 type parsedQuery struct {
-	// likes is a small map of column → LIKE substring. Avoids the
-	// FTS5 path for trivial prefix queries (from:alice) so we don't
-	// pay tokenizer setup cost for what's effectively a substring scan.
-	// Only structured fields go in here: from_address, from_name,
-	// to_json (for to:), subject.
+	// likes maps a DSL prefix (from, to, subject) to its LIKE
+	// substring. Avoids the FTS5 path for trivial prefix queries
+	// (from:alice) so we don't pay tokenizer setup cost for what's
+	// effectively a substring scan. likeColumns says which columns
+	// each prefix searches.
 	likes map[string]string
 
 	folder        string
@@ -38,12 +38,12 @@ func parseQuery(input string) parsedQuery {
 		case "from":
 			// Match either the address or the display name — users
 			// usually type "alice" without remembering which.
-			p.likes["from_address"] = val
+			p.likes["from"] = val
 		case "to":
 			// to_json is a JSON array of {name, address}; LIKE
 			// substring matches both the address and the name in
 			// the same pass.
-			p.likes["to_json"] = val
+			p.likes["to"] = val
 		case "subject":
 			p.likes["subject"] = val
 		case "in":
@@ -100,6 +100,30 @@ func parseQuery(input string) parsedQuery {
 		p.fts = strings.Join(quoted, " ")
 	}
 	return p
+}
+
+// likeColumns lists, in a fixed order, the DSL prefixes that become
+// LIKE filters and the columns each one matches (OR-joined).
+var likeColumns = []struct {
+	key  string
+	cols []string
+}{
+	{"from", []string{"from_address", "from_name"}},
+	{"to", []string{"to_json"}},
+	{"subject", []string{"subject"}},
+}
+
+// likeEscapeChar is the ESCAPE character used with likePattern.
+const likeEscapeChar = `\`
+
+// likePattern turns a user substring into a LIKE pattern matching it
+// literally: %, _ and the escape character itself are escaped, so
+// `from:a_b` doesn't match "axb" and `subject:100%` doesn't match
+// everything starting with "100". Use with `ESCAPE '\'`.
+func likePattern(val string) string {
+	r := strings.NewReplacer(likeEscapeChar, likeEscapeChar+likeEscapeChar,
+		"%", likeEscapeChar+"%", "_", likeEscapeChar+"_")
+	return "%" + r.Replace(val) + "%"
 }
 
 // ftsQuote wraps a term in FTS5 phrase-form, escaping embedded

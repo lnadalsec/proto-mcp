@@ -149,10 +149,10 @@ func TestInvalidateBodyCacheRemovesPlaintext(t *testing.T) {
 	if m.BodyText != nil || m.BodyHTML != nil {
 		t.Errorf("plaintext survives invalidation: text=%v html=%v", m.BodyText, m.BodyHTML)
 	}
-	if ids, _ := s.SearchMessages(ctx, `"body-m1"`, 0); len(ids) != 0 {
+	if ids := searchIDs(t, s, "body-m1"); len(ids) != 0 {
 		t.Errorf("FTS still matches the invalidated body: %v", ids)
 	}
-	if ids, _ := s.SearchMessages(ctx, `"subj-m1"`, 0); len(ids) != 1 {
+	if ids := searchIDs(t, s, "subj-m1"); len(ids) != 1 {
 		t.Errorf("subject should stay searchable after invalidation: %v", ids)
 	}
 }
@@ -188,7 +188,7 @@ func TestPurgeOlderThan_ClearsOrphanedBodies(t *testing.T) {
 	if m, _ := s.GetMessage(ctx, "orphan"); m.BodyText != nil || m.BodyHTML != nil {
 		t.Errorf("orphaned plaintext survives purge")
 	}
-	if ids, _ := s.SearchMessages(ctx, `"body-orphan"`, 0); len(ids) != 0 {
+	if ids := searchIDs(t, s, "body-orphan"); len(ids) != 0 {
 		t.Errorf("FTS still matches the purged orphan: %v", ids)
 	}
 	if _, err := s.GetCachedBody(ctx, "fresh"); err != nil {

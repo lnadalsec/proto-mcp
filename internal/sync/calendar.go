@@ -46,7 +46,27 @@ type CalendarRunResult struct {
 // per-tick cost off the PGP path. Change detection is per-calendar
 // max(LastEditTime); deletions are handled by a full-set reconcile
 // against the live event IDs (the calendar API has no delete cursor).
+//
+// Calls are serialized within the process (calendarSyncSem), like
+// RunOnce. Across processes the high-water mark only moves forward
+// (RaiseSyncStateInt), an older envelope never overwrites a newer one,
+// and an event a stale run removed is re-mirrored on the next pass
+// (applyCalendarEvents skips only events present at the same edit).
 func RunCalendarOnce(ctx context.Context, sess *protonclient.Session, st *store.Store) (*CalendarRunResult, error) {
+	release, err := acquire(ctx, calendarSyncSem)
+	if err != nil {
+		return &CalendarRunResult{}, err
+	}
+	defer release()
+	return runCalendarOnce(ctx, sess, st)
+}
+
+// calendarSyncSem serializes calendar syncs within the process; see
+// mailSyncSem.
+var calendarSyncSem = make(chan struct{}, 1)
+
+// runCalendarOnce is RunCalendarOnce without the in-process lock.
+func runCalendarOnce(ctx context.Context, sess *protonclient.Session, st *store.Store) (*CalendarRunResult, error) {
 	start := time.Now()
 	res := &CalendarRunResult{}
 
@@ -151,8 +171,14 @@ func syncAllCalendarEvents(
 // one unreadable event must not abort the backfill. The CLI
 // `protonmcp calendar-backfill` drives this.
 func RunCalendarBackfill(ctx context.Context, sess *protonclient.Session, st *store.Store, decrypt bool) (*CalendarRunResult, error) {
+	release, err := acquire(ctx, calendarSyncSem)
+	if err != nil {
+		return &CalendarRunResult{}, err
+	}
+	defer release()
+
 	start := time.Now()
-	res, err := RunCalendarOnce(ctx, sess, st)
+	res, err := runCalendarOnce(ctx, sess, st)
 	if err != nil {
 		return res, err
 	}
@@ -280,20 +306,29 @@ func syncCalendarEvents(
 	}
 
 	if newMax > storedMax {
-		if err := st.SetSyncState(ctx, calendarMaxEditPrefix+calID, strconv.FormatInt(newMax, 10)); err != nil {
+		if err := st.RaiseSyncStateInt(ctx, calendarMaxEditPrefix+calID, newMax); err != nil {
 			return upserted, deleted, fmt.Errorf("save calendar high-water for %s: %w", calID, err)
 		}
 	}
 	return upserted, deleted, nil
 }
 
-// applyCalendarEvents upserts events whose LastEditTime exceeds storedMax,
-// reconciles deletions against the live set, and returns the new
-// high-water mark plus counts. It is pure with respect to the network
-// (takes already-fetched events) so it can be tested against an in-memory
-// store, mirroring how applyEvent is tested.
+// applyCalendarEvents upserts events that are missing from the mirror or
+// newer than their mirrored row, reconciles deletions against the live
+// set, and returns the new high-water mark plus counts. It is pure with
+// respect to the network (takes already-fetched events) so it can be
+// tested against an in-memory store, mirroring how applyEvent is tested.
+//
+// Skipping is decided per row rather than against storedMax alone: an
+// event at or below the high-water mark but absent locally (removed by
+// a concurrent run working from an older listing) is mirrored again
+// instead of staying lost until its next edit.
 func applyCalendarEvents(ctx context.Context, st *store.Store, calID string, events []gpa.CalendarEvent, storedMax int64) (newMax int64, upserted, deleted int, err error) {
 	newMax = storedMax
+	have, err := st.CalendarEventEditTimes(ctx, calID)
+	if err != nil {
+		return newMax, 0, 0, err
+	}
 	liveIDs := make([]string, 0, len(events))
 	for _, ev := range events {
 		liveIDs = append(liveIDs, ev.ID)
@@ -301,7 +336,7 @@ func applyCalendarEvents(ctx context.Context, st *store.Store, calID string, eve
 			newMax = ev.LastEditTime
 		}
 		// Skip events we've already mirrored at this edit time.
-		if ev.LastEditTime <= storedMax {
+		if le, ok := have[ev.ID]; ok && le >= ev.LastEditTime {
 			continue
 		}
 		if err := st.UpsertCalendarEventEnvelope(ctx, toEnvelope(ev)); err != nil {

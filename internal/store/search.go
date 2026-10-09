@@ -69,7 +69,7 @@ type ListFilter struct {
 // Search runs a query against the local mirror and returns matching
 // rows. The query string uses a small DSL:
 //
-//	from:alice          → from_address LIKE %alice%
+//	from:alice          → from_address or from_name LIKE %alice%
 //	to:bob              → to_json LIKE %bob%
 //	subject:gear        → subject LIKE %gear%
 //	in:inbox            → folder = inbox
@@ -82,8 +82,10 @@ type ListFilter struct {
 // feed into the FTS5 MATCH expression. Combine freely; everything
 // AND-joined.
 //
-// Result ordering: FTS rank if any bare terms were given, otherwise
-// date descending.
+// LIKE values match literally (%, _ and \ are escaped).
+//
+// Result ordering: FTS5 rank (bm25, best first; ties by date) if any
+// bare terms were given, otherwise date descending.
 func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]SearchHit, error) {
 	parsed := parseQuery(query)
 
@@ -103,15 +105,27 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Se
 	)
 
 	if parsed.fts != "" {
-		// Join messages → messages_fts on message_id. Adding the FTS
-		// table forces SQLite to walk only the matching rows.
-		conds = append(conds, "messages.id IN (SELECT message_id FROM messages_fts WHERE messages_fts MATCH ?)")
+		// The FTS table is joined (see the FROM clause below) rather
+		// than used in an IN subquery: rank is only defined on the
+		// row a MATCH produced, so ordering by relevance needs the
+		// match in the same query.
+		conds = append(conds, "messages_fts MATCH ?")
 		args = append(args, parsed.fts)
 		fromFTS = true
 	}
-	for col, like := range parsed.likes {
-		conds = append(conds, fmt.Sprintf("messages.%s LIKE ?", col))
-		args = append(args, "%"+like+"%")
+	for _, lc := range likeColumns {
+		val, ok := parsed.likes[lc.key]
+		if !ok {
+			continue
+		}
+		// Column names come from the hard-coded likeColumns table,
+		// never from the query.
+		ors := make([]string, 0, len(lc.cols))
+		for _, col := range lc.cols {
+			ors = append(ors, fmt.Sprintf(`messages.%s LIKE ? ESCAPE '\'`, col))
+			args = append(args, likePattern(val))
+		}
+		conds = append(conds, "("+strings.Join(ors, " OR ")+")")
 	}
 	if parsed.folder != "" {
 		conds = append(conds, "messages.folder = ?")
@@ -161,25 +175,31 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Se
 		where = strings.Join(conds, " AND ")
 	}
 
+	from := "messages"
 	orderBy := "messages.date DESC"
 	if fromFTS {
-		// FTS5 rank exposed via the rowid->bm25 column. Subselect
-		// already filters by MATCH; reorder by joining on rank.
-		orderBy = "(SELECT rank FROM messages_fts WHERE message_id = messages.id) ASC, messages.date DESC"
+		// messages_fts.rowid is messages_fts_map.fts_rowid (migration
+		// 0008), so both joins are index seeks driven by the MATCH.
+		// rank is FTS5's bm25 score: lower is a better match.
+		from = `messages_fts
+  JOIN messages_fts_map ON messages_fts_map.fts_rowid = messages_fts.rowid
+  JOIN messages ON messages.id = messages_fts_map.message_id`
+		orderBy = "messages_fts.rank ASC, messages.date DESC"
 	}
 
 	// SECURITY C-8. LIMIT / OFFSET bound as ? parameters rather than
 	// Sprintf'd in — same defense-in-depth as the WHERE clause args.
-	// orderBy is one of two hard-coded literals (the FTS-rank or the
-	// plain date-DESC variants above), NOT user input.
+	// from and orderBy are hard-coded literals (the FTS-join or the
+	// plain messages variants above), NOT user input.
 	q := fmt.Sprintf(`
-SELECT id, thread_id, subject, from_address, from_name, date, folder, body_text,
-       unread, has_attachments
-  FROM messages
+SELECT messages.id, messages.thread_id, messages.subject, messages.from_address,
+       messages.from_name, messages.date, messages.folder, messages.body_text,
+       messages.unread, messages.has_attachments
+  FROM %s
  WHERE %s
  ORDER BY %s
  LIMIT ? OFFSET ?
-`, where, orderBy)
+`, from, where, orderBy)
 	args = append(args, opts.Limit, opts.Offset)
 
 	rows, err := s.DB.QueryContext(ctx, q, args...)
