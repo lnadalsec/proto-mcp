@@ -137,6 +137,10 @@ func (s *Store) DeleteCalendar(ctx context.Context, calendarID string) error {
 // (decrypted_at NULL → the read path re-decrypts). SQLite evaluates
 // every SET expression against the pre-update row, so the CASEs see
 // the old last_edit regardless of order.
+//
+// An envelope older than the stored one (lower last_edit) is ignored:
+// it can only come from a sync that fetched before a concurrent, newer
+// one wrote, and must not roll the row back.
 func (s *Store) UpsertCalendarEventEnvelope(ctx context.Context, e CalendarEventEnvelope) error {
 	const q = `
 INSERT INTO calendar_events (
@@ -164,6 +168,7 @@ ON CONFLICT(id) DO UPDATE SET
     attendees_json = CASE WHEN excluded.last_edit > calendar_events.last_edit THEN NULL ELSE attendees_json END,
     raw_ical       = CASE WHEN excluded.last_edit > calendar_events.last_edit THEN NULL ELSE raw_ical END,
     decrypted_at   = CASE WHEN excluded.last_edit > calendar_events.last_edit THEN NULL ELSE decrypted_at END
+ WHERE excluded.last_edit >= calendar_events.last_edit
 `
 	_, err := s.DB.ExecContext(ctx, q,
 		e.ID, e.CalendarID, e.UID, e.StartUnix, e.StartTZ, e.EndUnix, e.EndTZ,
@@ -272,6 +277,28 @@ func (s *Store) ListCalendarEvents(ctx context.Context, f CalendarEventFilter) (
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CalendarEventEditTimes returns the last_edit of every mirrored event
+// in a calendar, keyed by event ID.
+func (s *Store) CalendarEventEditTimes(ctx context.Context, calendarID string) (map[string]int64, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id, last_edit FROM calendar_events WHERE calendar_id = ?`, calendarID)
+	if err != nil {
+		return nil, fmt.Errorf("calendar edit times %s: %w", calendarID, err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var (
+			id string
+			le int64
+		)
+		if err := rows.Scan(&id, &le); err != nil {
+			return nil, fmt.Errorf("calendar edit times scan: %w", err)
+		}
+		out[id] = le
 	}
 	return out, rows.Err()
 }

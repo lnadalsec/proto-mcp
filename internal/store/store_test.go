@@ -117,7 +117,7 @@ func TestUpsertAndGetMessage(t *testing.T) {
 	}
 }
 
-func TestSearchMessagesFTS(t *testing.T) {
+func TestSearchFTS(t *testing.T) {
 	s := mustOpen(t)
 	ctx := context.Background()
 
@@ -132,21 +132,27 @@ func TestSearchMessagesFTS(t *testing.T) {
 		}
 	}
 
-	ids, err := s.SearchMessages(ctx, "portage", 10)
-	if err != nil {
-		t.Fatalf("SearchMessages: %v", err)
-	}
-	if len(ids) != 2 {
+	if ids := searchIDs(t, s, "portage"); len(ids) != 2 {
 		t.Fatalf("expected 2 matches, got %d (%v)", len(ids), ids)
 	}
-
-	ids, err = s.SearchMessages(ctx, "alice", 10)
-	if err != nil {
-		t.Fatalf("SearchMessages from: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != "a" {
+	if ids := searchIDs(t, s, "alice"); len(ids) != 1 || ids[0] != "a" {
 		t.Errorf("expected only msg a to match 'alice', got %v", ids)
 	}
+}
+
+// searchIDs runs Search with the given DSL query and returns the
+// matching message IDs in result order.
+func searchIDs(t *testing.T, s *Store, query string) []string {
+	t.Helper()
+	hits, err := s.Search(context.Background(), query, SearchOpts{Limit: MaxSearchLimit})
+	if err != nil {
+		t.Fatalf("Search(%q): %v", query, err)
+	}
+	ids := make([]string, 0, len(hits))
+	for _, h := range hits {
+		ids = append(ids, h.MessageID)
+	}
+	return ids
 }
 
 func TestLabelsCascadeOnDelete(t *testing.T) {

@@ -37,6 +37,10 @@ type Message struct {
 // only envelope columns), so callers can re-run backfill without losing
 // the lazily-decrypted body cache.
 func (s *Store) UpsertMessage(ctx context.Context, m Message) error {
+	return upsertMessage(ctx, s.DB, m)
+}
+
+func upsertMessage(ctx context.Context, db execer, m Message) error {
 	const q = `
 INSERT INTO messages (
     id, thread_id, subject, from_address, from_name, to_json, cc_json,
@@ -57,7 +61,7 @@ ON CONFLICT(id) DO UPDATE SET
     size_bytes      = excluded.size_bytes,
     raw_json        = excluded.raw_json
 `
-	_, err := s.DB.ExecContext(ctx, q,
+	_, err := db.ExecContext(ctx, q,
 		m.ID, m.ThreadID, m.Subject, m.FromAddress, m.FromName,
 		m.ToJSON, m.CcJSON, m.Date.Unix(),
 		boolToInt(m.Unread), boolToInt(m.Starred), boolToInt(m.HasAttachments),
@@ -121,41 +125,6 @@ FROM messages WHERE id = ?
 	return m, nil
 }
 
-// SearchMessages runs an FTS5 MATCH against the indexed envelope + body
-// columns and returns message IDs ordered by rank (best match first).
-// limit caps results; 0 means no limit.
-//
-// D28: limit binds via ? rather than fmt.Sprintf so future maintainers
-// don't copy a "Sprintf-LIMIT-is-fine" pattern with a user-supplied
-// integer somewhere it's not.
-func (s *Store) SearchMessages(ctx context.Context, query string, limit int) ([]string, error) {
-	q := `
-SELECT message_id FROM messages_fts
-WHERE messages_fts MATCH ?
-ORDER BY rank
-`
-	queryArgs := []any{query}
-	if limit > 0 {
-		q += " LIMIT ?"
-		queryArgs = append(queryArgs, limit)
-	}
-	rows, err := s.DB.QueryContext(ctx, q, queryArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("fts search: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("fts scan: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
 // SetMessageLabels replaces the label associations for a message in a
 // single transaction. Pass an empty slice to clear all labels.
 func (s *Store) SetMessageLabels(ctx context.Context, messageID string, labelIDs []string) error {
@@ -165,18 +134,25 @@ func (s *Store) SetMessageLabels(ctx context.Context, messageID string, labelIDs
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM message_labels WHERE message_id = ?`, messageID); err != nil {
+	if err := setMessageLabels(ctx, tx, messageID, labelIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func setMessageLabels(ctx context.Context, db execer, messageID string, labelIDs []string) error {
+	if _, err := db.ExecContext(ctx, `DELETE FROM message_labels WHERE message_id = ?`, messageID); err != nil {
 		return fmt.Errorf("clear labels: %w", err)
 	}
 	for _, lid := range labelIDs {
-		if _, err := tx.ExecContext(ctx,
+		if _, err := db.ExecContext(ctx,
 			`INSERT INTO message_labels(message_id, label_id) VALUES (?, ?)`,
 			messageID, lid,
 		); err != nil {
 			return fmt.Errorf("insert label %s: %w", lid, err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // SetSyncState records a single key/value pair in the sync_state table.
@@ -217,7 +193,11 @@ type Label struct {
 // UpsertLabel inserts or overwrites a single label row. Used by the
 // event-loop sync goroutine on label.create / label.update events.
 func (s *Store) UpsertLabel(ctx context.Context, l Label) error {
-	_, err := s.DB.ExecContext(ctx, `
+	return upsertLabel(ctx, s.DB, l)
+}
+
+func upsertLabel(ctx context.Context, db execer, l Label) error {
+	_, err := db.ExecContext(ctx, `
 INSERT INTO labels (id, name, color, type) VALUES (?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color, type = excluded.type
 `, l.ID, l.Name, l.Color, l.Type)
@@ -253,7 +233,11 @@ func (s *Store) GetLabel(ctx context.Context, labelID string) (Label, error) {
 // it stay (no FK back from message_labels.label_id → labels.id) so
 // per-message label sets stay consistent with the server's view.
 func (s *Store) DeleteLabel(ctx context.Context, labelID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM labels WHERE id = ?`, labelID)
+	return deleteLabel(ctx, s.DB, labelID)
+}
+
+func deleteLabel(ctx context.Context, db execer, labelID string) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM labels WHERE id = ?`, labelID)
 	if err != nil {
 		return fmt.Errorf("delete label %s: %w", labelID, err)
 	}
@@ -262,9 +246,13 @@ func (s *Store) DeleteLabel(ctx context.Context, labelID string) error {
 
 // DeleteMessage removes a message row. message_labels rows cascade-
 // delete via the FK; messages_fts entries are removed by the trigger
-// set up in 0001_initial.sql.
+// set up in 0008_fts_rowid_link.sql.
 func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, messageID)
+	return deleteMessage(ctx, s.DB, messageID)
+}
+
+func deleteMessage(ctx context.Context, db execer, messageID string) error {
+	_, err := db.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, messageID)
 	if err != nil {
 		return fmt.Errorf("delete message %s: %w", messageID, err)
 	}
@@ -281,7 +269,11 @@ func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
 // now drops) on disk forever. Full-text search stops matching the body
 // until the message is read again; subject/sender stay indexed.
 func (s *Store) InvalidateBodyCache(ctx context.Context, messageID string) error {
-	_, err := s.DB.ExecContext(ctx,
+	return invalidateBodyCache(ctx, s.DB, messageID)
+}
+
+func invalidateBodyCache(ctx context.Context, db execer, messageID string) error {
+	_, err := db.ExecContext(ctx,
 		`UPDATE messages SET body_text = NULL, body_html = NULL, list_unsubscribe = NULL, list_unsubscribe_post = NULL, body_cached_at = NULL WHERE id = ?`, messageID)
 	if err != nil {
 		return fmt.Errorf("invalidate body cache %s: %w", messageID, err)
