@@ -84,7 +84,9 @@ func (s *Session) FetchAndDecryptMessage(ctx context.Context, msgID string) (*Me
 		out.HTML = sanitize.HTML(body)
 		out.Text = sanitize.Text(body)
 	case strings.HasPrefix(mimeType, "text/plain"):
-		out.Text = sanitize.Text(body)
+		// PlainText, not Text: a plain-text body has no markup, and
+		// Text's tag pass would eat "a < b > c".
+		out.Text = sanitize.PlainText(body)
 		// Leave HTML empty for plaintext-only messages.
 	default:
 		// multipart/* or unknown — for v1 just treat the whole body

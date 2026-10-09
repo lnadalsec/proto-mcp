@@ -61,13 +61,16 @@ func mailListAttachments(deps Deps) mcp.Tool {
 	type result struct {
 		MessageID   string           `json:"message_id"`
 		Attachments []attachmentMeta `json:"attachments"`
+		// UntrustedFields names the per-attachment sender-controlled
+		// fields (see untrusted.go).
+		UntrustedFields []string `json:"untrusted_fields"`
 	}
 
 	return mcp.Tool{
 		Name: "mail_list_attachments",
 		Description: "List attachment metadata for a message (id / filename / mime_type / size / inline). " +
 			"Does NOT download attachment bytes — that's a separate tool. " +
-			"Triggers a single API call to fetch the full message if it's not already cached locally.",
+			"Triggers a single API call to fetch the full message if it's not already cached locally." + untrustedFieldsNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -94,7 +97,8 @@ func mailListAttachments(deps Deps) mcp.Tool {
 						},
 						"required": ["id", "filename", "size_bytes"]
 					}
-				}
+				},
+				"untrusted_fields": {"type": "array", "items": {"type": "string"}}
 			},
 			"required": ["message_id", "attachments"]
 		}`),
@@ -128,25 +132,36 @@ func mailListAttachments(deps Deps) mcp.Tool {
 				return mcp.ErrorResult("mail_list_attachments: fetch failed: %v", err), nil
 			}
 
-			out := result{MessageID: in.MessageID}
+			out := result{MessageID: in.MessageID, UntrustedFields: attachmentUntrustedFields}
 			for _, a := range m.Attachments {
-				meta := attachmentMeta{
-					ID:        a.ID,
-					Filename:  a.Name,
-					MIMEType:  string(a.MIMEType),
-					SizeBytes: int(a.Size),
-					Inline:    a.Disposition == "inline",
-				}
-				// ContentID isn't a top-level field on Attachment;
-				// it lives in the RFC 822 headers when present.
-				if cid := headerFirst(a.Headers, "Content-Id"); cid != "" {
-					meta.ContentID = cid
-				}
-				out.Attachments = append(out.Attachments, meta)
+				out.Attachments = append(out.Attachments, attachmentMetaFrom(a))
 			}
 			return mcp.StructuredResult(out)
 		},
 	}
+}
+
+// attachmentUntrustedFields are the attachmentMeta fields the sender
+// controls; attachmentMetaFrom cleans them with untrustedLine.
+var attachmentUntrustedFields = []string{"filename", "mime_type", "content_id"}
+
+// attachmentMetaFrom builds the reported metadata for one attachment.
+// The ID is passed through untouched (it goes back to
+// mail_download_attachment); everything the sender wrote is cleaned.
+func attachmentMetaFrom(a gpa.Attachment) attachmentMeta {
+	meta := attachmentMeta{
+		ID:        a.ID,
+		Filename:  untrustedLine(a.Name),
+		MIMEType:  untrustedLine(string(a.MIMEType)),
+		SizeBytes: int(a.Size),
+		Inline:    a.Disposition == "inline",
+	}
+	// ContentID isn't a top-level field on Attachment;
+	// it lives in the RFC 822 headers when present.
+	if cid := headerFirst(a.Headers, "Content-Id"); cid != "" {
+		meta.ContentID = untrustedLine(cid)
+	}
+	return meta
 }
 
 // _ unused-but-kept references so a Go vet / unused-import sweep

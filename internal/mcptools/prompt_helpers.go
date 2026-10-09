@@ -69,8 +69,7 @@ const (
 )
 
 // capField sanitizes one value for a dialog line and shortens it to
-// max runes, ending with "..." when cut. (Not "…": SanitizePromptText's
-// NFKC pass would expand it to "..." anyway.) Not for addresses; see
+// max runes, ending with "..." when cut. Not for addresses; see
 // joinAddrs.
 func capField(s string, max int) string {
 	s = sanitizeField(s)
@@ -80,16 +79,71 @@ func capField(s string, max int) string {
 	return string([]rune(s)[:max-3]) + "..."
 }
 
-// promptAddrs renders raw recipient arguments (as the LLM passed them)
-// as bare addresses, splitting any entry that holds several. An entry
-// that doesn't parse is shown as given, since the send would fail on
-// it anyway. An empty list renders as "(none)".
-func promptAddrs(entries []string) string {
+// promptAddrs turns raw recipient arguments (as the LLM passed them)
+// into bare addresses, splitting any entry that holds several. An
+// entry that doesn't parse is kept as given, since the send would fail
+// on it anyway.
+func promptAddrs(entries []string) []string {
 	var addrs []string
 	for _, e := range entries {
 		addrs = append(addrs, normalizeRecipientList(e)...)
 	}
-	return orNone(joinAddrs(addrs))
+	return addrs
+}
+
+// maxFlaggedRunes caps how many distinct code points recipientWarning
+// lists per address; the address itself is always shown.
+const maxFlaggedRunes = 8
+
+// recipientWarning returns a dialog line naming every recipient
+// address that is not plain ASCII or whose domain is punycode
+// ("xn--"), or "" when there is none.
+//
+// The dialog shows addresses as given (no Unicode normalization), but
+// a fullwidth "ａ" or a Cyrillic "а" still reads as "a", and invisible
+// characters are stripped from the dialog text altogether. So each
+// flagged address is followed by the code points that make it
+// suspect, which stay readable whatever the glyphs look like.
+func recipientWarning(lists ...[]string) string {
+	var flagged []string
+	for _, list := range lists {
+		for _, a := range list {
+			if note := addressNote(a); note != "" {
+				flagged = append(flagged, sanitizeField(a)+" ["+note+"]")
+			}
+		}
+	}
+	if len(flagged) == 0 {
+		return ""
+	}
+	return "WARNING: check these recipient addresses, they contain non-ASCII, " +
+		"look-alike or hidden characters: " + strings.Join(flagged, "; ")
+}
+
+// addressNote describes what makes addr suspect, or "" if nothing does.
+func addressNote(addr string) string {
+	var notes []string
+	seen := map[rune]bool{}
+	for _, r := range addr {
+		if r >= 0x20 && r < 0x7f || seen[r] {
+			continue
+		}
+		seen[r] = true
+		if len(seen) > maxFlaggedRunes {
+			notes = append(notes, "...")
+			break
+		}
+		notes = append(notes, fmt.Sprintf("U+%04X", r))
+	}
+	if at := strings.LastIndexByte(addr, '@'); at >= 0 {
+		for _, label := range strings.Split(addr[at+1:], ".") {
+			if strings.HasPrefix(strings.ToLower(label), "xn--") {
+				notes = append(notes, "punycode domain")
+				break
+			}
+		}
+	}
+	return strings.Join(notes, " ")
 }
 
 func orNone(s string) string {

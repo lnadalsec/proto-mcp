@@ -11,8 +11,7 @@ import (
 func TestSanitizePromptText_StripsControlChars(t *testing.T) {
 	// \x07 BEL, \x1b ESC (terminal escape),  APC (C1 range).
 	//  is intentionally written as a Unicode escape so the
-	// string is valid UTF-8; raw \x9f would be an invalid byte
-	// that NFKC replaces with U+FFFD before we get to it.
+	// string is valid UTF-8; a raw \x9f byte would decode as U+FFFD.
 	in := "alice@example.com\x07\x1bevil"
 	got := SanitizePromptText(in, 1000)
 	for _, bad := range []rune{0x07, 0x1b, 0x9f} {
@@ -72,12 +71,24 @@ func TestSanitizePromptText_LengthCap(t *testing.T) {
 	}
 }
 
-func TestSanitizePromptText_NFKCNormalization(t *testing.T) {
-	// Fullwidth Latin "ＡＢＣ" (U+FF21..) normalizes to "ABC" under NFKC.
-	in := "ＡＢＣ"
-	got := SanitizePromptText(in, 1000)
-	if got != "ABC" {
-		t.Errorf("NFKC didn't fold fullwidth: %q", got)
+// The dialog shows the code points it is given: NFKC used to fold
+// fullwidth "ａlice@…" to "alice@…" on screen while the raw address
+// was what got sent.
+func TestSanitizePromptText_NoNormalization(t *testing.T) {
+	for _, in := range []string{"ＡＢＣ", "ａlice@example.com", "caf\u0065\u0301", "x\u2126y"} {
+		if got := SanitizePromptText(in, 1000); got != in {
+			t.Errorf("SanitizePromptText(%q) = %q, want it unchanged", in, got)
+		}
+		if got, err := SanitizePromptTextStrict(in, 1000); err != nil || got != in {
+			t.Errorf("SanitizePromptTextStrict(%q) = %q, %v; want it unchanged", in, got, err)
+		}
+	}
+}
+
+// Unicode tag characters (U+E0000 block) are invisible; drop them.
+func TestSanitizePromptText_StripsTagCharacters(t *testing.T) {
+	if got := SanitizePromptText("a\U000E0041\U000E007Fb", 100); got != "ab" {
+		t.Errorf("tag characters not stripped: %q", got)
 	}
 }
 

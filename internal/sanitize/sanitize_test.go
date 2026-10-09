@@ -128,14 +128,89 @@ func TestTextStripsCaseAndSpacedClosingTags(t *testing.T) {
 	}
 }
 
-func TestTextStripsQuotedReplies(t *testing.T) {
+// Quoted-reply lines are content too: dropping them hid part of the
+// message from mail_read and from the FTS index.
+func TestTextKeepsQuotedReplies(t *testing.T) {
 	in := "On Tuesday Alice wrote:\n> Original message\n> > Nested\nMy actual reply"
 	got := Text(in)
-	if strings.Contains(got, "Original message") || strings.Contains(got, "Nested") {
-		t.Errorf("quoted lines kept: %q", got)
+	for _, want := range []string{"Original message", "Nested", "actual reply"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q lost: %q", want, got)
+		}
 	}
-	if !strings.Contains(got, "actual reply") {
-		t.Errorf("real reply lost: %q", got)
+}
+
+// A text/plain body has no markup: "<" and ">" are content, and so are
+// quoted lines. Line structure is kept.
+func TestPlainTextKeepsAngleBracketsAndQuotes(t *testing.T) {
+	in := "if a < b > c then\r\n> quoted line\r\n> > nested <tag>\r\nreply"
+	want := "if a < b > c then\n> quoted line\n> > nested <tag>\nreply"
+	if got := PlainText(in); got != want {
+		t.Errorf("PlainText = %q, want %q", got, want)
+	}
+}
+
+func TestPlainTextCollapsesBlankRuns(t *testing.T) {
+	in := "\n\npara one   \n\n \n\t\n\npara two\n\n"
+	want := "para one\n\npara two"
+	if got := PlainText(in); got != want {
+		t.Errorf("PlainText = %q, want %q", got, want)
+	}
+	if PlainText("") != "" {
+		t.Error("PlainText(\"\") should be empty")
+	}
+}
+
+func TestPlainTextStripsControlAndInvisible(t *testing.T) {
+	in := "pay\x1b[31m to \u202eexe.txt\u200b ok\U000E0041\U000E0042 done"
+	got := PlainText(in)
+	for _, bad := range []rune{0x1b, 0x202e, 0x200b, 0xe0041, 0xe0042} {
+		if strings.ContainsRune(got, bad) {
+			t.Errorf("%U not stripped: %q", bad, got)
+		}
+	}
+	if got != "pay[31m to exe.txt ok done" {
+		t.Errorf("PlainText = %q", got)
+	}
+}
+
+// ZWJ / ZWNJ carry meaning in emoji and several scripts; body text
+// keeps them.
+func TestTextKeepsJoiners(t *testing.T) {
+	in := "family \U0001F468\u200d\U0001F469 \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"
+	if got := PlainText(in); got != in {
+		t.Errorf("PlainText changed joiners: %q", got)
+	}
+}
+
+// bluemonday passes bidi / control / tag characters through; HTML()
+// strips them afterwards.
+func TestHTMLStripsControlAndBidi(t *testing.T) {
+	in := "<p>invoice\u202efdp.exe\x07 \u2066x\u2069\U000E0049</p>"
+	got := HTML(in)
+	for _, bad := range []rune{0x202e, 0x07, 0x2066, 0x2069, 0xe0049} {
+		if strings.ContainsRune(got, bad) {
+			t.Errorf("%U survived HTML(): %q", bad, got)
+		}
+	}
+	if got != "<p>invoicefdp.exe x</p>" {
+		t.Errorf("HTML = %q", got)
+	}
+}
+
+// Outbound keeps the bare policy (no extra character pass): this
+// change is inbound-only.
+func TestOutboundUnchangedByInboundStrip(t *testing.T) {
+	in := "<p>a\u202eb</p>"
+	if got := Outbound(in); got != in {
+		t.Errorf("Outbound = %q, want %q", got, in)
+	}
+}
+
+func TestHeaderValueFlattensUnicodeLineBreaks(t *testing.T) {
+	got := HeaderValue("a\u2028b\u2029c\u202ed")
+	if got != "a b cd" {
+		t.Errorf("HeaderValue = %q", got)
 	}
 }
 

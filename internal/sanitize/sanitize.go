@@ -10,9 +10,16 @@
 //     that prompt-injection embedded in exotic markup has nowhere
 //     to hide.
 //
-//   - Text(input) — pure text extraction with quoted-reply markers
-//     trimmed and whitespace collapsed. Source for snippets and
-//     for the FTS5 body_text column.
+//   - Text(input) — pure text extraction from an HTML (or HTML-ish)
+//     body with whitespace collapsed. Source for snippets and for the
+//     FTS5 body_text column.
+//
+//   - PlainText(input) — the same for a text/plain body: no tag
+//     stripping (a plain-text body has no markup, so "a < b > c" is
+//     content), line structure kept.
+//
+// Every output has C0/C1 control characters and invisible bidi /
+// zero-width formatting characters removed (stripControlChars).
 //
 // SECURITY Foundational #7 + Phase-2 plan Q1 (strict policy).
 package sanitize
@@ -68,11 +75,17 @@ func buildHTMLPolicy() *bluemonday.Policy {
 
 // HTML returns a sanitized copy of input. Always safe to call;
 // returns "" for empty input.
+//
+// bluemonday passes control and bidi characters through untouched, so
+// the result is run through stripControlChars like Text: an RLO or a
+// Unicode tag character in an HTML body would otherwise reach the LLM
+// (and any terminal the body is printed to) as-is. Removing those
+// runes cannot create markup, so the policy's guarantees still hold.
 func HTML(input string) string {
 	if input == "" {
 		return ""
 	}
-	return htmlPolicy.Sanitize(input)
+	return stripControlChars(htmlPolicy.Sanitize(input))
 }
 
 // Outbound sanitizes LLM-supplied HTML before it's encrypted and
@@ -87,15 +100,16 @@ func HTML(input string) string {
 // other. Today Outbound is HTML(); if outbound ever needs different
 // rules (e.g. allow <a href> for explicit hyperlinks the LLM was
 // told to include), this is the seam.
+//
+// Outbound deliberately does NOT take HTML()'s inbound
+// control/bidi-character pass: it keeps the bare policy so this
+// change to the read path leaves what is sent untouched.
 func Outbound(input string) string {
-	return HTML(input)
+	if input == "" {
+		return ""
+	}
+	return htmlPolicy.Sanitize(input)
 }
-
-// quotedReplyLine matches lines that are pure quoted-reply markers
-// ("> something" or "> > something"). Used by Text() to drop the
-// in-line reply history — for snippets we want the new content,
-// not the email-thread tail.
-var quotedReplyLine = regexp.MustCompile(`^\s*(>+\s?)+`)
 
 // htmlTagStripper removes any remaining tags after the HTML policy
 // has done its work. The policy keeps allowlist tags; this pass
@@ -133,9 +147,14 @@ var whitespaceRun = regexp.MustCompile(`\s+`)
 //     wholesale (D42 — otherwise CSS / JS leaks into the plaintext).
 //  2. Strip every remaining tag (including allowlist tags — for text
 //     output we want pure content).
-//  3. Drop lines that are entirely quoted-reply markers.
+//  3. Strip control and invisible formatting characters.
 //  4. Collapse whitespace runs to a single space.
 //  5. Trim leading/trailing space.
+//
+// Quoted-reply lines ("> ...") are kept. Dropping them hid part of the
+// message from mail_read and from the FTS index, and the quoted text is
+// as much sender-controlled content as the rest. Use PlainText for a
+// text/plain body: the tag pass here would eat "a < b > c".
 //
 // Note: HTML entities like &amp; are NOT decoded. Decoding adds a
 // dependency on html.UnescapeString and lets clever encodings hide
@@ -151,16 +170,32 @@ func Text(input string) string {
 	out = scriptContentStripper.ReplaceAllString(out, " ")
 	out = htmlTagStripper.ReplaceAllString(out, " ")
 	out = stripControlChars(out)
-
-	var lines []string
-	for _, line := range strings.Split(out, "\n") {
-		if quotedReplyLine.MatchString(line) {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	out = strings.Join(lines, " ")
 	out = whitespaceRun.ReplaceAllString(out, " ")
+	return strings.TrimSpace(out)
+}
+
+// blankLineRun matches three or more line breaks (with any horizontal
+// whitespace between them) so PlainText can cap blank runs at one
+// empty line.
+var blankLineRun = regexp.MustCompile(`\n[ \t]*(?:\n[ \t]*){2,}`)
+
+// PlainText cleans a text/plain body for the LLM. Unlike Text it does
+// no tag stripping (there is no markup; "<" and ">" are content) and
+// keeps the line structure, quoted-reply lines included: CRLF becomes
+// LF, trailing spaces are trimmed, runs of blank lines collapse to
+// one, and control / invisible formatting characters are stripped.
+func PlainText(input string) string {
+	if input == "" {
+		return ""
+	}
+	out := strings.ReplaceAll(input, "\r\n", "\n")
+	out = strings.ReplaceAll(out, "\r", "\n")
+	out = stripControlChars(out)
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " \t")
+	}
+	out = blankLineRun.ReplaceAllString(strings.Join(lines, "\n"), "\n\n")
 	return strings.TrimSpace(out)
 }
 
@@ -170,7 +205,9 @@ func Text(input string) string {
 // is trimmed. It does no length capping; callers bound it themselves.
 func HeaderValue(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' || r == '\t' {
+		switch r {
+		case '\r', '\n', '\t', 0x2028, 0x2029:
+			// U+2028 / U+2029 render as line breaks too.
 			return ' '
 		}
 		return r
@@ -179,7 +216,8 @@ func HeaderValue(s string) string {
 }
 
 // stripControlChars drops C0 (< 0x20, excluding \n and \t) and C1
-// (0x80–0x9F) control bytes from s. SECURITY C-2: terminal escape
+// (0x80–0x9F) control bytes from s, plus the invisible formatting
+// characters listed in isInvisibleFormat. SECURITY C-2: terminal escape
 // sequences and zero-width control bytes embedded in mail bodies
 // can corrupt LLM output, hide content from human reviewers, or
 // break terminal rendering when the body is dumped to stdout via
@@ -200,11 +238,43 @@ func stripControlChars(s string) string {
 			// C0 control char — drop.
 		case r >= 0x7f && r <= 0x9f:
 			// DEL (0x7f) and C1 control range — drop.
+		case isInvisibleFormat(r):
+			// Bidi controls, zero-width characters, tag characters.
 		default:
 			b.WriteRune(r)
 		}
 	}
 	return b.String()
+}
+
+// isInvisibleFormat reports whether r is an invisible formatting
+// character that sender-controlled text has no business carrying into
+// an LLM prompt: bidi marks / embeddings / overrides / isolates (they
+// reorder what a human reviewer sees), zero-width space, word joiner
+// and invisible operators, BOM, and Unicode tag characters (U+E0000
+// block, which encode hidden ASCII the model can read but a person
+// can't — "ASCII smuggling").
+//
+// ZWJ / ZWNJ (U+200C, U+200D) are kept: emoji sequences and several
+// scripts (Persian, Indic) need them in body text. The approval dialog
+// (internal/mcp SanitizePromptText) drops them too; that path is
+// stricter on purpose.
+func isInvisibleFormat(r rune) bool {
+	switch {
+	case r == 0x200e || r == 0x200f || r == 0x061c: // LRM, RLM, ALM
+		return true
+	case r >= 0x202a && r <= 0x202e: // bidi embeddings / overrides
+		return true
+	case r >= 0x2066 && r <= 0x2069: // bidi isolates
+		return true
+	case r == 0x200b || r == 0xfeff: // ZWSP, BOM
+		return true
+	case r >= 0x2060 && r <= 0x2064: // word joiner, invisible operators
+		return true
+	case r >= 0xe0000 && r <= 0xe007f: // tag characters
+		return true
+	}
+	return false
 }
 
 // Snippet returns up to maxRunes runes from Text(input), suitable for
