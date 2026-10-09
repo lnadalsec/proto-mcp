@@ -2,10 +2,13 @@ package serve
 
 import (
 	"context"
+	"time"
 
 	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
 	"github.com/just-an-oldsalt/proto-mcp/internal/store"
 )
+
+var _ mcp.RateLimitPruner = (*rateLimitStoreAdapter)(nil)
 
 // rateLimitStoreAdapter bridges internal/store's rate_limit_state
 // table to internal/mcp.RateLimitPersister. The two packages don't
@@ -13,7 +16,7 @@ import (
 // contact for Phase 6/E's bucket persistence.
 //
 // All translation is straight field-mapping. The composite key
-// ("tool|pid" — set by middleware.runTool) passes through unchanged.
+// ("tool|uid:N" — mcp.rateLimitKey) passes through unchanged.
 type rateLimitStoreAdapter struct {
 	st *store.Store
 }
@@ -36,6 +39,13 @@ func (a *rateLimitStoreAdapter) LoadAll(ctx context.Context) (map[string]mcp.Per
 		}
 	}
 	return out, nil
+}
+
+// PruneOlderThan implements mcp.RateLimitPruner: the limiter drops
+// buckets that have fully refilled (including legacy per-PID rows)
+// at startup.
+func (a *rateLimitStoreAdapter) PruneOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	return a.st.PruneRateLimitOlderThan(ctx, cutoff)
 }
 
 func (a *rateLimitStoreAdapter) Save(ctx context.Context, key string, b mcp.PersistedBucket) error {

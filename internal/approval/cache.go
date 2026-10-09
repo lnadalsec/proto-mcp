@@ -94,12 +94,22 @@ func (c *cache) purge() int {
 // can't piggyback on each other's approvals. args is included so
 // changing the recipient list invalidates a cached approval — the
 // safe answer for write tools.
+//
+// Every variable-length field is length-prefixed (8-byte LE length,
+// then bytes) so the encoding is injective: without the prefixes,
+// bytes could shift between tool, pid and args and two different
+// (tool, pid, args) triples would hash to the same key.
 func cacheKey(tool string, pid int, args []byte) string {
 	h := sha256.New()
-	h.Write([]byte(tool))
-	var pidBuf [8]byte
-	binary.LittleEndian.PutUint64(pidBuf[:], uint64(pid))
-	h.Write(pidBuf[:])
-	h.Write(args)
+	var buf [8]byte
+	writeField := func(b []byte) {
+		binary.LittleEndian.PutUint64(buf[:], uint64(len(b)))
+		h.Write(buf[:])
+		h.Write(b)
+	}
+	writeField([]byte(tool))
+	binary.LittleEndian.PutUint64(buf[:], uint64(pid)) // #nosec G115 -- bit pattern only feeds the hash
+	h.Write(buf[:])
+	writeField(args)
 	return hex.EncodeToString(h.Sum(nil))
 }

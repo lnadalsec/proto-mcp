@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -266,7 +265,7 @@ func (m *Middleware) runTool(ctx context.Context, t Tool, args json.RawMessage, 
 	// rate → recipients → broker → handler.
 	if pol != nil && pol.RateLimit != "" {
 		m.ensureRate()
-		key := t.Name + "|" + strconv.Itoa(callerInfo.PID)
+		key := rateLimitKey(t.Name, callerInfo)
 		if ok, reason := m.rate.Allow(key, pol.RateLimit); !ok {
 			outcome = audit.OutcomeDenied
 			errMsg = reason

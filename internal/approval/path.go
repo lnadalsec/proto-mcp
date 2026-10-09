@@ -1,7 +1,6 @@
 package approval
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,6 +130,3 @@ func ownerWritableOnly(p string) bool {
 	}
 	return true
 }
-
-// (touch a sentinel error here to anchor the doc comment in path.go)
-var _ = errors.New
