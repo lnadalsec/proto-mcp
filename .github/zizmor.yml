@@ -1,0 +1,9 @@
+# Configuration de zizmor (audit de sécurité des workflows), utilisée par securite.yml.
+# Règles : https://docs.zizmor.sh/audits/
+# Par défaut zizmor exige l'épinglage par SHA de toutes les actions (unpinned-uses)
+# et un délai Dependabot d'au moins 7 jours (dependabot-cooldown).
+rules:
+  # actionlint 1.7.12 rejette encore la syntaxe « uses: $/… » (rhysd/actionlint#732) :
+  # les actions locales restent appelées en « ./… » après un checkout.
+  self-repository:
+    disable: true

@@ -21,12 +21,12 @@ func TestLoadV2Salt(t *testing.T) {
 		0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f}
 
 	v2blob := map[string]any{
-		"email":                "user@proton.me",
-		"uid":                  "test-uid",
-		"access_token":         "test-access",
-		"refresh_token":        "test-refresh",
-		"salted_key_pass_b64":  base64.StdEncoding.EncodeToString(want),
-		"v":                    2,
+		"email":               "user@proton.me",
+		"uid":                 "test-uid",
+		"access_token":        "test-access",
+		"refresh_token":       "test-refresh",
+		"salted_key_pass_b64": base64.StdEncoding.EncodeToString(want),
+		"v":                   2,
 	}
 	data, err := json.Marshal(v2blob)
 	if err != nil {

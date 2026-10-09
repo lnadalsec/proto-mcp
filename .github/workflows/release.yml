@@ -43,23 +43,44 @@ on:
   #  tags:
   #    - "v*"
 
-permissions:
-  contents: write   # required to create the release + upload assets
+permissions: {}
 
 jobs:
   release:
     runs-on: macos-14
+    # Secrets Apple accessibles uniquement via l'environnement « release »
+    # (relecteur obligatoire, branche/tags protégés) — pas au niveau du dépôt.
+    environment: release
+    permissions:
+      contents: write      # création de la release et envoi des archives
+      id-token: write      # attestation de provenance (Sigstore)
+      attestations: write  # publication de l'attestation
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # See ci.yml: sourced from go.mod so the toolchain always
           # satisfies the declared floor.
           go-version-file: go.mod
-          cache: true
+          # Pas de cache dans un job qui signe : un cache empoisonné par une
+          # autre exécution finirait dans un binaire notarisé.
+          cache: false
+
+      # Lancé à la main depuis une branche, GITHUB_REF_NAME vaudrait « main »
+      # et l'archive s'appellerait protonmcp-main.tar.gz.
+      - name: Exécution depuis un tag vX.Y.Z uniquement
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [ "$REF_TYPE" != tag ] || ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error title=Release::lancer depuis un tag vX.Y.Z (ref actuelle : $GITHUB_REF_NAME)"
+            exit 1
+          fi
 
       # The cert/key are imported into a transient keychain so the
       # runner's default login keychain stays untouched. The keychain
@@ -72,11 +93,14 @@ jobs:
         run: |
           set -euo pipefail
           # Random keychain password — never reused, lifecycle == job.
+          # Utilisé seulement dans cette étape : ne pas l'exporter dans $GITHUB_ENV,
+          # où toutes les étapes suivantes le liraient.
+          # Jamais affiché, donc pas de commande add-mask (qui l'écrirait elle-même dans
+          # le journal si les commandes de workflow étaient suspendues).
           KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
-          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
 
           # Decode the .p12.
-          echo "$CERT_P12_B64" | base64 --decode > /tmp/cert.p12
+          echo "$CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
 
           # Create the transient keychain.
           KEYCHAIN_PATH="$RUNNER_TEMP/protonmcp-release.keychain-db"
@@ -87,17 +111,18 @@ jobs:
 
           # Make our keychain the SEARCH default so codesign finds the
           # cert. Login keychain stays in the search list as fallback.
+          # shellcheck disable=SC2046 # découpage voulu : une entrée par trousseau
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
           # Import + allow codesign to use the cert without prompting.
-          security import /tmp/cert.p12 \
+          security import "$RUNNER_TEMP/cert.p12" \
             -k "$KEYCHAIN_PATH" \
             -P "$CERT_PASSWORD" \
             -T /usr/bin/codesign \
             -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          rm -f /tmp/cert.p12
+          rm -f "$RUNNER_TEMP/cert.p12"
 
           # Sanity: confirm the cert is visible.
           security find-identity -p codesigning -v "$KEYCHAIN_PATH"
@@ -167,21 +192,26 @@ jobs:
           tar -czf "protonmcp-$VERSION.tar.gz" "protonmcp-$VERSION"
           shasum -a 256 "protonmcp-$VERSION.tar.gz" > "protonmcp-$VERSION.tar.gz.sha256"
 
-          echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
-          echo "ARTIFACT_TGZ=$RUNNER_TEMP/protonmcp-$VERSION.tar.gz" >> "$GITHUB_ENV"
-          echo "ARTIFACT_SHA=$RUNNER_TEMP/protonmcp-$VERSION.tar.gz.sha256" >> "$GITHUB_ENV"
+          {
+            echo "STAGE_DIR=$STAGE"
+            echo "ARTIFACT_TGZ=$RUNNER_TEMP/protonmcp-$VERSION.tar.gz"
+            echo "ARTIFACT_SHA=$RUNNER_TEMP/protonmcp-$VERSION.tar.gz.sha256"
+          } >> "$GITHUB_ENV"
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
+      - name: Attestation de provenance (SLSA)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          # body comes from the tag's annotation, or the repo's
-          # CHANGELOG if you maintain one; for now leave blank and
-          # let the maintainer fill it in via gh release edit.
-          files: |
-            ${{ env.ARTIFACT_TGZ }}
-            ${{ env.ARTIFACT_SHA }}
-          draft: true   # let the maintainer review before going live
-          generate_release_notes: true
+          subject-path: ${{ env.ARTIFACT_TGZ }}
+
+      # gh (préinstallé) plutôt qu'une action tierce : rien d'externe ne s'exécute
+      # avec contents: write pendant que la clé Developer ID est dans le trousseau.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Brouillon : le mainteneur relit avant publication.
+          gh release create "$GITHUB_REF_NAME" --draft --generate-notes --verify-tag \
+            "$ARTIFACT_TGZ" "$ARTIFACT_SHA"
 
       - name: Cleanup keychain
         if: always()

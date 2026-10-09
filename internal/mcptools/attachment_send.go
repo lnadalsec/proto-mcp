@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gluon/rfc822"
+	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
 	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"

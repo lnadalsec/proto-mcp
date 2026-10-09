@@ -32,14 +32,14 @@ const cursorKey = "event_cursor"
 // RunResult summarizes a RunOnce call so callers (CLI / daemon /
 // future audit log) can print or persist meaningful numbers.
 type RunResult struct {
-	StartCursor   string
-	EndCursor     string
-	Pages         int           // event pages drained
+	StartCursor      string
+	EndCursor        string
+	Pages            int // event pages drained
 	MessagesUpserted int
 	MessagesDeleted  int
 	LabelsUpserted   int
 	LabelsDeleted    int
-	RefreshRequested bool          // server asked for a full backfill
+	RefreshRequested bool // server asked for a full backfill
 	Elapsed          time.Duration
 }
 

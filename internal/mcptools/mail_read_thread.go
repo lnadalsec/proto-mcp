@@ -10,8 +10,8 @@ import (
 
 func mailReadThread(deps Deps) mcp.Tool {
 	type input struct {
-		ThreadID      string `json:"thread_id"`
-		BodyFormat    string `json:"body_format,omitempty"`
+		ThreadID   string `json:"thread_id"`
+		BodyFormat string `json:"body_format,omitempty"`
 		// Pointer so we can tell "field absent (default true)" from
 		// "explicitly false" — a default-true bool would be lost
 		// when JSON omits the field.

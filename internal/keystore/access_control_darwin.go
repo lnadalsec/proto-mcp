@@ -25,9 +25,9 @@ import (
 // Returns nil on success, or an error wrapping the OSStatus from
 // Security.framework. The most common non-zero results:
 //
-//   -25291  errSecAllocate         (allocation failure — usually OOM)
-//   -25308  errSecInteractionNotAllowed (keychain locked, e.g. screen lock)
-//   -25300  errSecItemNotFound     (update on missing item — shouldn't happen)
+//	-25291  errSecAllocate         (allocation failure — usually OOM)
+//	-25308  errSecInteractionNotAllowed (keychain locked, e.g. screen lock)
+//	-25300  errSecItemNotFound     (update on missing item — shouldn't happen)
 //
 // A full OSStatus reference: <https://www.osstatus.com/>
 func saveProtected(service, account, label string, data []byte) error {
@@ -40,6 +40,7 @@ func saveProtected(service, account, label string, data []byte) error {
 		cstr(label), C.int(len(label)),
 		// CFData copies the bytes internally; no lifetime concern
 		// from the Go side after the call returns.
+		// nosemgrep: go.lang.security.audit.unsafe.use-of-unsafe-block -- cgo buffer, length passed alongside
 		unsafe.Pointer(&data[0]), C.int(len(data)),
 	)
 	if status != 0 {
@@ -63,6 +64,7 @@ func cstr(s string) *C.char {
 	}
 	// unsafe.Pointer of the first byte; cgo handles pinning for
 	// the duration of the call.
+	// nosemgrep: go.lang.security.audit.unsafe.use-of-unsafe-block -- read-only view for cgo, length passed alongside
 	return (*C.char)(unsafe.Pointer(unsafe.StringData(s)))
 }
 

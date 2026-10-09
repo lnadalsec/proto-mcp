@@ -13,27 +13,35 @@
 
 # Default — everything that doesn't match a more specific rule
 # below.
-*                                @just-an-oldsalt
+*                                @lnadalsec
 
 # Crypto / session / Keychain — every change here directly
 # touches confidentiality and refresh-token persistence.
-/internal/proton/                @just-an-oldsalt
-/internal/keystore/              @just-an-oldsalt
-/internal/secret/                @just-an-oldsalt
+/internal/proton/                @lnadalsec
+/internal/keystore/              @lnadalsec
+/internal/secret/                @lnadalsec
 
 # Sanitizer / redactor — every change affects the prompt-
 # injection mitigation and the audit-log redaction guarantees.
-/internal/sanitize/              @just-an-oldsalt
-/internal/redact/                @just-an-oldsalt
+/internal/sanitize/              @lnadalsec
+/internal/redact/                @lnadalsec
 
 # Policy / approval / audit — the Phase 4 gating layer.
-/internal/policy/                @just-an-oldsalt
-/internal/approval/              @just-an-oldsalt
-/internal/audit/                 @just-an-oldsalt
-/internal/mcp/                   @just-an-oldsalt
+/internal/policy/                @lnadalsec
+/internal/approval/              @lnadalsec
+/internal/audit/                 @lnadalsec
+/internal/mcp/                   @lnadalsec
 
 # Swift Touch ID helper.
-/helpers/touchid/                @just-an-oldsalt
+/helpers/touchid/                @lnadalsec
+/helpers/lockwatch/              @lnadalsec
+
+# Release / signing scripts and the integrity self-check.
+/scripts/                        @lnadalsec
+/cmd/protonmcpd/integrity.go     @lnadalsec
+/Makefile                        @lnadalsec
+/go.mod                          @lnadalsec
+/go.sum                          @lnadalsec
 
 # CI / Dependabot config — locks the auto-merge boundary.
-/.github/                        @just-an-oldsalt
+/.github/                        @lnadalsec

@@ -7,18 +7,18 @@ import (
 // Filename normalizes an attachment filename for safe display + safe
 // filesystem use. Phase 8/A. Called at three points:
 //
-//   1. Inbound: by Session.FetchAndDecryptAttachment before the
-//      filename hits attachment_cache / the MCP response / the audit
-//      log. Defends the audit + LLM context against RTL-spoofed names
-//      ("repor‮.exe.txt" rendering as "report.txt.exe").
-//   2. Outbound: by mail_send's attachment validation before
-//      Client.UploadAttachment. Defends downstream Proton recipients
-//      against the same spoofing if an LLM is fed an adversarial
-//      filename.
-//   3. mail_save_attachment: as the first transform on the input
-//      filename, before the path-traversal defense (filepath.Base +
-//      Clean + ~/Downloads root check). Defense-in-depth: this step
-//      strips the obvious; the path resolver catches anything missed.
+//  1. Inbound: by Session.FetchAndDecryptAttachment before the
+//     filename hits attachment_cache / the MCP response / the audit
+//     log. Defends the audit + LLM context against RTL-spoofed names
+//     ("repor‮.exe.txt" rendering as "report.txt.exe").
+//  2. Outbound: by mail_send's attachment validation before
+//     Client.UploadAttachment. Defends downstream Proton recipients
+//     against the same spoofing if an LLM is fed an adversarial
+//     filename.
+//  3. mail_save_attachment: as the first transform on the input
+//     filename, before the path-traversal defense (filepath.Base +
+//     Clean + ~/Downloads root check). Defense-in-depth: this step
+//     strips the obvious; the path resolver catches anything missed.
 //
 // Strips applied in order:
 //   - C0 / C1 control bytes (reuses stripControlChars).

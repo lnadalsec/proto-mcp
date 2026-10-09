@@ -347,9 +347,9 @@ const (
 // `protonmcp purge --dry-run` and by the serve-stdio startup
 // log so the user has a sense of what got cleaned.
 type PurgeStats struct {
-	TotalCached   int64
-	WouldPurge    int64
-	OldestCached  *time.Time
+	TotalCached  int64
+	WouldPurge   int64
+	OldestCached *time.Time
 }
 
 // CountCachedBodies returns purge planning info: total rows with

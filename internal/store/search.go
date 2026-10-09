@@ -97,8 +97,8 @@ func (s *Store) Search(ctx context.Context, query string, opts SearchOpts) ([]Se
 	}
 
 	var (
-		conds  []string
-		args   []any
+		conds   []string
+		args    []any
 		fromFTS bool
 	)
 

@@ -1,0 +1,6 @@
+# Faux positifs gitleaks vérifiés : clés et jetons factices des tests de redaction.
+7b23913531fbaa5c5aaf61176af397b972715bac:internal/proton/redact_test.go:private-key:60
+7b23913531fbaa5c5aaf61176af397b972715bac:internal/proton/redact_test.go:private-key:97
+dbf99a77c93f46abd9d89feb72a22f358540bcc7:internal/redact/embedded_audit_test.go:jwt:13
+eb56f788bc333ca520348ad8fe0ce83d2ba94d99:internal/proton/redact_test.go:generic-api-key:22
+eb56f788bc333ca520348ad8fe0ce83d2ba94d99:internal/logging/logging_test.go:generic-api-key:102

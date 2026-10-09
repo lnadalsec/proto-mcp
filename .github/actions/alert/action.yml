@@ -1,0 +1,55 @@
+name: Alerte
+description: Ouvre, commente ou ferme l'issue d'alerte d'une clé (étiquette « alerte ») ; notification webhook Teams ou Slack facultative.
+
+inputs:
+  key:
+    description: Identifiant unique de l'alerte (ex. surveillance-production, securite-depot, deploiement-production).
+    required: true
+  status:
+    description: failure (ouvre l'issue, ou la commente si elle existe) ou success (ferme l'issue ouverte, s'il y en a une).
+    required: true
+  title:
+    description: Titre de l'issue, préfixé automatiquement par [alerte:<key>].
+    required: true
+  body-file:
+    description: Fichier Markdown décrivant le constat (tronqué au-delà de 60 000 octets).
+    required: false
+    default: ''
+  github-token:
+    description: Jeton disposant de la permission « issues write » (en général github.token).
+    required: true
+  webhook-url:
+    description: URL d'un webhook entrant Teams ou Slack (facultatif ; jamais affichée).
+    required: false
+    default: ''
+  rappel-heures:
+    description: >-
+      0 (défaut) : chaque échec ajoute un commentaire. N > 0 : si le rapport porte la même empreinte
+      de constats (scripts/monitor.mjs) que le dernier signalement, pas de nouveau commentaire avant N heures.
+    required: false
+    default: '0'
+
+outputs:
+  issue:
+    description: Numéro de l'issue concernée (vide si aucune).
+    value: ${{ steps.alerte.outputs.issue }}
+  action:
+    description: creee, commentee, inchangee, fermee ou aucune.
+    value: ${{ steps.alerte.outputs.action }}
+
+runs:
+  using: composite
+  steps:
+    - name: Ouvrir, commenter ou fermer l'alerte
+      id: alerte
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        ALERTE_CLE: ${{ inputs.key }}
+        ALERTE_STATUT: ${{ inputs.status }}
+        ALERTE_TITRE: ${{ inputs.title }}
+        ALERTE_FICHIER: ${{ inputs.body-file }}
+        ALERTE_WEBHOOK: ${{ inputs.webhook-url }}
+        ALERTE_RAPPEL_HEURES: ${{ inputs.rappel-heures }}
+      run: bash "$GITHUB_ACTION_PATH/alerte.sh"

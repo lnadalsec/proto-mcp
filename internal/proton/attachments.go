@@ -35,14 +35,14 @@ type AttachmentPayload struct {
 // Cryptographic flow (per go-proton-api SDK; reference impl at
 // message_build.go:writeAttachmentPart in the SDK source):
 //
-//   1. GetMessage gives us Message.Attachments[i] with KeyPackets
-//      (base64) and Message.AddressID for the keyring lookup.
-//   2. GetAttachment gives us the encrypted data packet (raw bytes).
-//   3. base64-decode KeyPackets to get the key packet bytes.
-//   4. NewPGPSplitMessage combines key + data packets into a
-//      single PGPMessage.
-//   5. addressKeyring.Decrypt decrypts using the address's private
-//      key (which is unlocked at session resume).
+//  1. GetMessage gives us Message.Attachments[i] with KeyPackets
+//     (base64) and Message.AddressID for the keyring lookup.
+//  2. GetAttachment gives us the encrypted data packet (raw bytes).
+//  3. base64-decode KeyPackets to get the key packet bytes.
+//  4. NewPGPSplitMessage combines key + data packets into a
+//     single PGPMessage.
+//  5. addressKeyring.Decrypt decrypts using the address's private
+//     key (which is unlocked at session resume).
 //
 // Errors are returned verbatim; the caller (mail_download_attachment)
 // translates them to mcp.ErrorResult.
