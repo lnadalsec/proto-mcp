@@ -163,8 +163,12 @@ jobs:
         run: |
           mkdir -p sarif
           # govulncheck émet des piles d'appel en double, que code scanning refuse.
+          # Les résultats « note » (module requis mais symbole jamais appelé) sont
+          # retirés : le verdict de ce job porte sur l'atteignabilité, et OSV-Scanner
+          # couvre déjà tout le graphe (avec ses exceptions datées).
           "$(go env GOPATH)/bin/govulncheck" -format sarif ./... \
-            | jq '.runs[].results[]? |= (if .stacks then .stacks |= unique else . end)' > sarif/govulncheck.sarif || true
+            | jq '.runs[].results |= map(select(.level != "note") | if .stacks then .stacks |= unique else . end)' \
+            > sarif/govulncheck.sarif || true
           "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Rapports SARIF (artefact)
