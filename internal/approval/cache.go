@@ -17,6 +17,10 @@ type cache struct {
 	mu      sync.Mutex
 	entries map[string]time.Time // key → expires-at (UTC)
 	now     func() time.Time     // injectable for tests
+	// gen counts purges. A prompt that started before a purge (lock,
+	// policy reload) must not repopulate the cache when it returns:
+	// the approval was granted under the state the purge revoked.
+	gen uint64
 }
 
 func newCache() *cache {
@@ -43,11 +47,30 @@ func (c *cache) hit(key string) bool {
 	return true
 }
 
+// generation returns the current purge count; pass it to setIfGen.
+func (c *cache) generation() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
+}
+
 // set stores key with the given TTL from now.
 func (c *cache) set(key string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = c.now().Add(ttl)
+}
+
+// setIfGen stores key only if no purge happened since gen was read.
+// Reports whether the entry was stored.
+func (c *cache) setIfGen(key string, ttl time.Duration, gen uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		return false
+	}
+	c.entries[key] = c.now().Add(ttl)
+	return true
 }
 
 // purge drops every cached approval. SECURITY D14: called after
@@ -62,6 +85,7 @@ func (c *cache) purge() int {
 	defer c.mu.Unlock()
 	n := len(c.entries)
 	c.entries = map[string]time.Time{}
+	c.gen++
 	return n
 }
 

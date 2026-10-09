@@ -183,6 +183,20 @@ func WithUnlockRequest(fn func(context.Context) error) Option {
 	}
 }
 
+// WithCallGuard installs the bracket the middleware holds around the
+// session-touching part of every tool call. See Middleware.callGuard.
+func WithCallGuard(fn func() (release func(), ok bool)) Option {
+	return func(s *Server) {
+		if fn == nil {
+			return
+		}
+		if s.middleware == nil {
+			s.middleware = &Middleware{}
+		}
+		s.middleware.callGuard = fn
+	}
+}
+
 // WithToolCallObserver registers a no-arg, non-blocking callback the
 // middleware fires at the start of every tool call (after the
 // lock-state check, before any audit / policy work). Phase 7/A —
@@ -297,10 +311,7 @@ func (s *Server) Tools() []Tool {
 // next message boundary.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	state := &connState{}
-	scanner := bufio.NewScanner(in)
-	// Default Scanner buffer is 64 KiB; allow up to 8 MiB per message
-	// to fit large attachment-metadata responses and similar.
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	reader := bufio.NewReaderSize(in, 64*1024)
 
 	enc := json.NewEncoder(out)
 	// MCP requires no embedded newlines inside a message; Encoder
@@ -308,23 +319,67 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	// frame delimiter we need.
 	enc.SetEscapeHTML(false)
 
-	for scanner.Scan() {
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue // tolerate blank lines defensively
+		line, tooLong, err := readLine(reader, maxMessageBytes)
+		if tooLong {
+			// The rest of the oversized line has been discarded, so the
+			// stream is back on a frame boundary: answer and keep the
+			// session, instead of dropping every call that follows.
+			s.write(enc, &Response{
+				JSONRPC: "2.0",
+				ID:      json.RawMessage("null"),
+				Error: NewError(CodeInvalidRequest, fmt.Sprintf(
+					"message larger than %d MiB; send large attachments in smaller parts", maxMessageBytes>>20)),
+			})
+		} else if len(line) > 0 {
+			s.handleLine(ctx, state, line, enc)
 		}
-		s.handleLine(ctx, state, line, enc)
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("mcp: read input: %w", err)
 		}
-		return fmt.Errorf("mcp: read input: %w", err)
 	}
-	return nil
+}
+
+// maxMessageBytes caps one NDJSON message. It must hold a mail_send
+// carrying an attachment at the default 25 MiB policy ceiling once
+// base64-encoded (×4/3) plus the JSON around it; 8 MiB did not, and the
+// old Scanner then ended the whole session on "token too long".
+const maxMessageBytes = 48 << 20
+
+// readLine returns the next newline-terminated line without its
+// terminator. A line longer than limit is read to its end and dropped
+// (tooLong=true) so the caller stays on a message boundary. err is
+// io.EOF after the last line.
+func readLine(r *bufio.Reader, limit int) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, isPrefix, rerr := r.ReadLine()
+		if !tooLong {
+			if len(line)+len(chunk) > limit {
+				tooLong = true
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if rerr != nil {
+			if tooLong {
+				return nil, true, rerr
+			}
+			return line, false, rerr
+		}
+		if !isPrefix {
+			if tooLong {
+				return nil, true, nil
+			}
+			return line, false, nil
+		}
+	}
 }
 
 // handleLine parses one NDJSON line and dispatches. Errors are

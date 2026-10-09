@@ -61,12 +61,6 @@ type Broker struct {
 	helperTimeout time.Duration
 }
 
-// New constructs a Broker. helperPath should resolve to an
-// executable file; if the file doesn't exist OR isn't executable,
-// New returns an error so callers (serve-stdio) fail fast at
-// startup rather than mid-call.
-//
-// Use ResolveHelperPath for the standard discovery sequence.
 // Invalidate drops every cached approval. SECURITY D14: serve-stdio
 // hooks this into the SIGHUP handler after engine.Reload() so a
 // policy that newly demands confirm:true (or newly restricts
@@ -80,6 +74,12 @@ func (b *Broker) Invalidate() int {
 	return b.cache.purge()
 }
 
+// New constructs a Broker. helperPath should resolve to an
+// executable file; if the file doesn't exist OR isn't executable,
+// New returns an error so callers (serve-stdio) fail fast at
+// startup rather than mid-call.
+//
+// Use ResolveHelperPath for the standard discovery sequence.
 func New(helperPath string, logger *slog.Logger) (*Broker, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -111,14 +111,15 @@ func (b *Broker) Request(ctx context.Context, r Request) (string, error) {
 		if b.cache.hit(key) {
 			return SourceCached, nil
 		}
-		defer func() {
-			// Populated only on success.
-		}()
+		gen := b.cache.generation()
 		src, err := b.runHelper(ctx, r)
 		if err != nil {
 			return "", err
 		}
-		b.cache.set(key, ttl)
+		// The approval still covers THIS call — the user just gave it —
+		// but a lock or policy reload while the prompt was up revoked
+		// everything cached, so it must not outlive this call.
+		b.cache.setIfGen(key, ttl, gen)
 		return src, nil
 	}
 

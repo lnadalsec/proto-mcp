@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -219,5 +221,43 @@ func TestCountCachedBodies_Stats(t *testing.T) {
 	delta := stats.OldestCached.Sub(want)
 	if delta < -2*time.Second || delta > 2*time.Second {
 		t.Errorf("OldestCached = %v, want ~%v", stats.OldestCached, want)
+	}
+}
+
+// D13 / C-1: a purged body must not survive in the FTS5 index. A
+// contentful FTS5 table leaves deleted tokens in its index segments
+// (secure_delete only zeroes freed pages), so the store enables the
+// FTS5 'secure-delete' option (migration 0007).
+func TestPurgeOlderThan_LeavesNoFTSResidue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "residue.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const token = "zqxjresiduetoken"
+	if err := s.UpsertMessage(ctx, Message{ID: "m1", ThreadID: "m1", Subject: "s", Date: time.Unix(1, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCachedBody(ctx, "m1", CachedBody{Text: "secret " + token, CachedAt: time.Unix(10, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PurgeOlderThan(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{path, path + "-wal"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(data, []byte(token)) {
+			t.Fatalf("purged body token still present in %s", filepath.Base(f))
+		}
 	}
 }

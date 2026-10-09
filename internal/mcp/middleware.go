@@ -85,6 +85,15 @@ type Middleware struct {
 	lockState        func() (bool, string) // Phase 6/E — nil = unlockable
 	onToolCallObserv func()                // Phase 7/A — idle activity bump
 
+	// callGuard brackets everything that may touch the Proton session
+	// (prompt snapshot, approval body, handler). Lock waits for every
+	// open bracket before it zeroes the keyrings, so a handler can't
+	// read the session's maps while Close deletes from them — a Go
+	// "concurrent map read and map write" is fatal, recover() can't
+	// catch it. ok=false means the daemon locked in between; the call
+	// is refused. nil = no guard (tests, serve-stdio without lock).
+	callGuard func() (release func(), ok bool)
+
 	// PROTO-152 — agent-requested unlock. nil keeps the original
 	// behavior (a locked call is refused outright); when set, a
 	// locked call raises the Touch ID prompt through this callback
@@ -188,6 +197,23 @@ func (m *Middleware) runTool(ctx context.Context, t Tool, args json.RawMessage, 
 	// contract; runtime's implementation is a single atomic store.
 	if m.onToolCallObserv != nil {
 		m.onToolCallObserv()
+	}
+
+	if m.callGuard != nil {
+		release, ok := m.callGuard()
+		if !ok {
+			logger.Warn("tool call refused: daemon locked before it could start",
+				"tool", t.Name, "caller_pid", callerInfo.PID)
+			return ErrorResult("daemon locked before %s could run; retry", t.Name), nil
+		}
+		defer release()
+		// A lock + unlock cycle between the lock check and the guard
+		// rebinds every handler (PROTO-132); pick up the current one.
+		if m.lookupTool != nil {
+			if fresh, ok := m.lookupTool(t.Name); ok {
+				t = fresh
+			}
+		}
 	}
 
 	if m.audit != nil {

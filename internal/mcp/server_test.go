@@ -252,3 +252,33 @@ func TestPing(t *testing.T) {
 		t.Errorf("ping response missing result: %+v", resps[1])
 	}
 }
+
+// A message over the size cap is answered with an error and the
+// session goes on; it used to end Serve ("token too long") and strand
+// the client. A message between the old 8 MiB cap and the new one
+// (a base64 attachment near the 25 MiB policy default) gets through.
+func TestOversizedMessageKeepsSession(t *testing.T) {
+	s := New(nil)
+	big := `{"jsonrpc":"2.0","id":9,"method":"ping","params":{"pad":"` +
+		strings.Repeat("A", maxMessageBytes) + `"}}`
+	mid := `{"jsonrpc":"2.0","id":3,"method":"ping","params":{"pad":"` +
+		strings.Repeat("A", 12<<20) + `"}}`
+	resps := roundtrip(t, s,
+		big,
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}`,
+		mid,
+	)
+	if len(resps) != 3 {
+		t.Fatalf("got %d responses, want 3 (error, pong, pong)", len(resps))
+	}
+	errObj, ok := resps[0]["error"].(map[string]any)
+	if !ok || int(errObj["code"].(float64)) != CodeInvalidRequest {
+		t.Fatalf("oversized message: got %v, want an invalid-request error", resps[0])
+	}
+	if id := resps[1]["id"]; id != float64(2) || resps[1]["error"] != nil {
+		t.Fatalf("request after the oversized one: got %v", resps[1])
+	}
+	if id := resps[2]["id"]; id != float64(3) || resps[2]["error"] != nil {
+		t.Fatalf("12 MiB message: got %v", resps[2])
+	}
+}
