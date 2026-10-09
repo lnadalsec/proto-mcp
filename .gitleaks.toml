@@ -1,0 +1,37 @@
+# Configuration gitleaks : règles par défaut, complétées par des règles propres au projet
+# (signature Apple Developer ID, notarisation, jetons Proton). Utilisée par
+# .github/workflows/securite.yml. Faux positif avéré : « gitleaks:allow » en commentaire
+# sur la ligne, ou l'empreinte du résultat dans .gitleaksignore (jamais le secret lui-même).
+
+title = "proto-mcp – gitleaks"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+# Mot de passe spécifique à une app Apple (notarytool) : xxxx-xxxx-xxxx-xxxx.
+[[rules]]
+id = "apple-app-specific-password"
+description = "Mot de passe spécifique à une app Apple (notarisation)"
+regex = '''(?i)(?:notary|apple|app[_-]?specific|altool|notarytool)[\w\s"'=:-]{0,40}\b([a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4})\b'''
+secretGroup = 1
+keywords = ["notary", "apple", "altool", "notarytool", "app-specific", "app_specific"]
+
+# Certificat Developer ID exporté en base64 (.p12 / PKCS#12 commence par MII).
+[[rules]]
+id = "pkcs12-base64"
+description = "Certificat PKCS#12 (.p12) encodé en base64"
+regex = '''(?i)(?:p12|pkcs12|cert(?:ificate)?)[\w"'\s]{0,30}[=:]\s*["']?(MII[A-Za-z0-9+/]{200,}={0,2})'''
+secretGroup = 1
+keywords = ["p12", "pkcs12", "cert"]
+
+# Jetons de session Proton (UID / AccessToken / RefreshToken) écrits en dur.
+[[rules]]
+id = "proton-session-token"
+description = "Jeton de session Proton"
+regex = '''(?i)"?(?:refresh_?token|access_?token|RefreshToken|AccessToken)"?\s*[:=]\s*"([a-z0-9]{32,})"'''
+secretGroup = 1
+keywords = ["refreshtoken", "accesstoken", "refresh_token", "access_token"]
+[[rules.allowlists]]
+description = "Valeurs factices des tests"
+paths = ['''_test\.go$''']

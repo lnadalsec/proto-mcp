@@ -1,0 +1,8 @@
+# Exceptions datées lues par OSV-Scanner (workflow « Sécurité », job dependances-osv).
+# Chaque exception renvoie à un ticket (risque, date de réexamen) et expire d'elle-même
+# à la date ignoreUntil : ne pas la prolonger sans réanalyse.
+#
+# [[IgnoredVulns]]
+# id = "GO-AAAA-NNNN"
+# ignoreUntil = 2026-12-31T00:00:00Z
+# reason = "Non atteignable (govulncheck), correctif bloqué par la directive replace ProtonMail. Ticket #N."

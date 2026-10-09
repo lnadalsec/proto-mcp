@@ -1,0 +1,584 @@
+# Sécurité du dépôt : secrets, dépendances Go, code (Go, Swift, scripts) et workflows.
+# Reprend la structure de lnadalsec/Accura-web (.github/workflows/securite.yml), adaptée
+# à un projet Go cgo macOS : govulncheck et CodeQL Go tournent sur macos-14, car
+# internal/keystore lie Security.framework et ne compile pas sous Linux.
+#
+# Chaque contrôle fait échouer son job et dépose ses rapports SARIF en artefacts
+# (« sarif-* »). Le dépôt est public : CodeQL, la revue des dépendances et l'onglet
+# Security sont disponibles sans GitHub Code Security payant.
+#
+# Remplace govulncheck-weekly.yml (exécution planifiée du lundi + ticket d'alerte).
+name: Sécurité
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1" # chaque lundi, 04:23 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: securite-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Outils épinglés : version et empreinte SHA-256 de l'archive publiée.
+  # Toujours mettre à jour les deux ensemble.
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  OSV_SCANNER_VERSION: "2.6.0"
+  OSV_SCANNER_SHA256: "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  ZIZMOR_VERSION: "1.30.1"
+  ZIZMOR_SHA256: "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+  # Module Go : l'intégrité est garantie par sum.golang.org (go install @version).
+  GOVULNCHECK_VERSION: "v1.8.0"
+  # Doit correspondre à l'image du job « semgrep » (épinglée par empreinte).
+  SEMGREP_VERSION: "1.179.0"
+
+jobs:
+  # 1. Secrets, identifiants et matériel de signature
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # lecture du dépôt et de son historique
+    steps:
+      - name: Récupération du dépôt (historique complet)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Projet signé Developer ID : un .p12, un profil de provisionnement ou une base
+      # SQLite de miroir (store.db) commités seraient critiques.
+      - name: Fichiers sensibles dans le dépôt ou son historique
+        id: fichiers
+        continue-on-error: true
+        run: |
+          motif='(^|/)\.env(\..+)?$|(^|/)\.envrc$|(^|/)id_(rsa|dsa|ecdsa|ed25519)$|\.(pem|key|p8|p12|pfx|cer|certSigningRequest|mobileprovision|provisionprofile|keychain(-db)?|kdbx)$|\.(db|db-wal|db-shm|sqlite3?)$|(^|/)audit\.log$'
+          { git ls-files; git log --all --diff-filter=A --name-only --format=; } | sort -u \
+            | grep -E "$motif" | grep -v -E '(^|/)\.env\.example$' > "$RUNNER_TEMP/fichiers-sensibles.txt" || true
+          if [ -s "$RUNNER_TEMP/fichiers-sensibles.txt" ]; then
+            echo "::error title=Fichiers sensibles::fichier(s) sensible(s) versionné(s), voir le journal"
+            cat "$RUNNER_TEMP/fichiers-sensibles.txt"
+            exit 1
+          fi
+
+      - name: Installation de gitleaks
+        run: |
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL --proto '=https' --retry 3 -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks"
+          sudo install -m 0755 "$(find "$RUNNER_TEMP/gitleaks" -type f -name gitleaks | head -n 1)" /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: gitleaks sur tout l'historique git
+        id: historique
+        continue-on-error: true
+        run: |
+          mkdir -p sarif
+          gitleaks git --config .gitleaks.toml --redact --no-banner --verbose \
+            --report-format sarif --report-path sarif/gitleaks-git.sarif .
+
+      - name: Rapports SARIF (artefact)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sarif-secrets
+          path: sarif/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          FICHIERS: ${{ steps.fichiers.outcome }}
+          HISTORIQUE: ${{ steps.historique.outcome }}
+        run: |
+          libelle() { case "$1" in success) echo "OK" ;; failure) echo "**ÉCHEC**" ;; *) echo "non exécuté" ;; esac; }
+          {
+            echo "### Secrets"
+            echo "| Contrôle | Résultat |"
+            echo "|---|---|"
+            echo "| Fichiers sensibles (.env, clés, .p12, profils, bases SQLite) | $(libelle "$FICHIERS") |"
+            echo "| gitleaks : historique git complet | $(libelle "$HISTORIQUE") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$FICHIERS" = success ] && [ "$HISTORIQUE" = success ]
+
+  # 2a. Dépendances Go : intégrité des modules et vulnérabilités atteignables (govulncheck).
+  # macOS obligatoire : govulncheck charge les paquets, dont internal/keystore (cgo).
+  dependances-go:
+    name: Dépendances (go mod verify, govulncheck)
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: read # lecture du dépôt
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installation de Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # pas de cache partagé dans un job de sécurité (empoisonnement du cache)
+
+      # go.sum cohérent avec go.mod, modules téléchargés identiques à sum.golang.org.
+      - name: Intégrité des modules (go mod tidy -diff, go mod verify)
+        id: integrite
+        continue-on-error: true
+        run: |
+          go mod tidy -diff
+          go mod verify
+
+      # Les directives replace (ProtonMail/*, resty) contournent Dependabot : on les liste
+      # pour qu'une nouvelle redirection apparaisse dans le résumé de chaque exécution.
+      - name: Directives replace
+        run: |
+          {
+            echo "### Directives replace (non suivies par Dependabot)"
+            echo '```'
+            go mod edit -json | jq -r '.Replace[]? | "\(.Old.Path) => \(.New.Path) \(.New.Version // "(local)")"'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Installation de govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+
+      # Bloquant : vulnérabilité atteignable depuis le code (niveau « symbol »).
+      - name: govulncheck
+        id: govulncheck
+        continue-on-error: true
+        run: |
+          mkdir -p sarif
+          "$(go env GOPATH)/bin/govulncheck" -format sarif ./... > sarif/govulncheck.sarif || true
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Rapports SARIF (artefact)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sarif-govulncheck
+          path: sarif/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          INTEGRITE: ${{ steps.integrite.outcome }}
+          GOVULNCHECK: ${{ steps.govulncheck.outcome }}
+        run: |
+          libelle() { case "$1" in success) echo "OK" ;; failure) echo "**ÉCHEC**" ;; *) echo "non exécuté" ;; esac; }
+          {
+            echo "### Dépendances Go"
+            echo "| Contrôle | Résultat |"
+            echo "|---|---|"
+            echo "| go mod tidy -diff / go mod verify | $(libelle "$INTEGRITE") |"
+            echo "| govulncheck (vulnérabilités atteignables) | $(libelle "$GOVULNCHECK") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$INTEGRITE" = success ] && [ "$GOVULNCHECK" = success ]
+
+  # 2b. OSV-Scanner : tout le graphe go.mod (atteignable ou non) et paquets malveillants (MAL-).
+  dependances-osv:
+    name: Dépendances (OSV-Scanner)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # lecture du dépôt
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installation d'OSV-Scanner
+        run: |
+          binaire="$RUNNER_TEMP/osv-scanner"
+          curl -fsSL --proto '=https' --retry 3 -o "$binaire" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  ${binaire}" | sha256sum --check --strict
+          sudo install -m 0755 "$binaire" /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      # Bloquant : score CVSS >= 7, score inconnu ou paquet malveillant (MAL-).
+      # Exceptions datées : osv-scanner.toml à la racine (IgnoredVulns + ignoreUntil).
+      - name: OSV-Scanner sur go.mod
+        id: osv
+        continue-on-error: true
+        run: |
+          mkdir -p sarif
+          code=0
+          osv-scanner scan source --lockfile go.mod --format sarif --output-file sarif/osv-scanner.sarif || code=$?
+          osv-scanner scan source --lockfile go.mod --format json --output-file "$RUNNER_TEMP/osv.json" || code=$?
+          if [ "$code" -gt 1 ]; then
+            echo "::error title=OSV-Scanner::erreur de l'outil (code $code)"
+            exit "$code"
+          fi
+          # shellcheck disable=SC2016 # programme jq : les « $ » ne sont pas des variables shell
+          filtre='[.results[]?.packages[]? | .package as $p | .groups[]?
+            | {paquet: "\($p.name)@\($p.version)", ids: (.ids | join(", ")), score: (.max_severity // "")}
+            | .bloquant = (.score == "" or ((.score | tonumber? // 10) >= 7) or (.ids | test("MAL-")))]'
+          {
+            echo "### OSV-Scanner"
+            jq -r "$filtre"' | if length == 0 then "Aucune vulnérabilité connue." else
+              (["| Paquet | Avis | Score CVSS | Bloquant |", "|---|---|---|---|"]
+               + map("| \(.paquet) | \(.ids) | \(if .score == "" then "inconnu" else .score end) | \(if .bloquant then "oui" else "non" end) |"))
+              | join("\n") end' "$RUNNER_TEMP/osv.json"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          bloquantes=$(jq "$filtre"' | map(select(.bloquant)) | length' "$RUNNER_TEMP/osv.json")
+          if [ "$bloquantes" -gt 0 ]; then
+            echo "::error title=OSV-Scanner::${bloquantes} vulnérabilité(s) bloquante(s)"
+            exit 1
+          fi
+
+      - name: Rapports SARIF (artefact)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sarif-osv
+          path: sarif/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          OSV: ${{ steps.osv.outcome }}
+        run: |
+          if [ "$OSV" = success ]; then r="OK"; else r="**ÉCHEC**"; fi
+          printf '### Dépendances (OSV)\n| Contrôle | Résultat |\n|---|---|\n| OSV-Scanner (CVSS >= 7 ou malveillant) | %s |\n' "$r" >> "$GITHUB_STEP_SUMMARY"
+          [ "$OSV" = success ]
+
+  # Revue des dépendances ajoutées par une pull request.
+  revue-dependances:
+    name: Revue des dépendances (PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # comparaison des manifestes par l'API du graphe de dépendances
+    steps:
+      - name: Revue des dépendances
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development
+          comment-summary-in-pr: never
+
+  # 3. Code
+  semgrep:
+    name: Code (Semgrep)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # lecture du dépôt
+    container:
+      # semgrep/semgrep 1.179.0, épinglée par empreinte (mettre aussi à jour SEMGREP_VERSION)
+      image: semgrep/semgrep:1.179.0@sha256:93963d9295a366f59e4850127b1550400ee7b388f04fe144e4a1f6325d96e01b
+    defaults:
+      run:
+        shell: sh
+    env:
+      SEMGREP_ENABLE_VERSION_CHECK: "0"
+      SEMGREP_SEND_METRICS: "off"
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Go (dont règles gosec), Swift (helpers Touch ID / lockwatch), scripts shell de
+      # release, secrets et GitHub Actions.
+      - name: Analyse Semgrep
+        id: semgrep
+        continue-on-error: true
+        run: |
+          mkdir -p sarif
+          semgrep scan --metrics=off --disable-version-check --error \
+            --config p/golang --config p/gosec --config p/swift --config p/bash \
+            --config p/secrets --config p/github-actions --config p/security-audit \
+            --sarif-output=sarif/semgrep.sarif --text
+
+      - name: Rapports SARIF (artefact)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sarif-semgrep
+          path: sarif/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          SEMGREP: ${{ steps.semgrep.outcome }}
+        run: |
+          if [ "$SEMGREP" = success ]; then r="OK"; else r="**ÉCHEC**"; fi
+          printf '### Code\n| Contrôle | Résultat |\n|---|---|\n| Semgrep | %s |\n' "$r" >> "$GITHUB_STEP_SUMMARY"
+          [ "$SEMGREP" = success ]
+
+  # Analyse CodeQL. Go se construit sur macOS (cgo + Security.framework) ;
+  # Swift et Actions n'ont pas besoin de build.
+  codeql:
+    name: Code (CodeQL ${{ matrix.langage }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read # lecture du dépôt
+      security-events: write # publication des résultats dans l'onglet Security
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - langage: go
+            runner: macos-14
+            build-mode: manual
+          - langage: swift
+            runner: macos-14
+            build-mode: manual
+          - langage: actions
+            runner: ubuntu-24.04
+            build-mode: none
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installation de Go
+        if: matrix.langage == 'go'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Initialisation de CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.langage }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-extended
+
+      - name: Build Go
+        if: matrix.langage == 'go'
+        run: go build ./...
+
+      - name: Build des helpers Swift
+        if: matrix.langage == 'swift'
+        run: make touchid lockwatch
+
+      - name: Analyse CodeQL
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.langage }}
+
+  # 4. Workflows GitHub Actions
+  workflows:
+    name: Workflows (zizmor, actionlint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # lecture du dépôt
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installation d'actionlint et de zizmor
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL --proto '=https' --retry 3 -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --proto '=https' --retry 3 -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" actionlint.tar.gz "$ZIZMOR_SHA256" zizmor.tar.gz | sha256sum --check --strict
+          mkdir -p actionlint zizmor
+          tar -xzf actionlint.tar.gz -C actionlint
+          tar -xzf zizmor.tar.gz -C zizmor
+          sudo install -m 0755 "$(find actionlint -type f -name actionlint | head -n 1)" /usr/local/bin/actionlint
+          sudo install -m 0755 "$(find zizmor -type f -name zizmor | head -n 1)" /usr/local/bin/zizmor
+          actionlint --version
+          zizmor --version
+
+      - name: actionlint
+        id: actionlint
+        continue-on-error: true
+        run: actionlint
+
+      # Configuration : .github/zizmor.yml. Le jeton reste en lecture seule.
+      - name: zizmor
+        id: zizmor
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p sarif
+          zizmor --format sarif . > sarif/zizmor.sarif || true
+          zizmor --format plain .
+
+      - name: Rapports SARIF (artefact)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sarif-workflows
+          path: sarif/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Versions des outils épinglés
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.event_name != 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Outils épinglés"
+            echo "| Outil | Épinglé | Dernière version |"
+            echo "|---|---|---|"
+            for outil in "gitleaks/gitleaks $GITLEAKS_VERSION" "google/osv-scanner $OSV_SCANNER_VERSION" \
+              "rhysd/actionlint $ACTIONLINT_VERSION" "zizmorcore/zizmor $ZIZMOR_VERSION" \
+              "semgrep/semgrep $SEMGREP_VERSION" "golang/vuln ${GOVULNCHECK_VERSION#v}"; do
+              depot=${outil% *}
+              epingle=${outil#* }
+              if [ "$depot" = golang/vuln ]; then
+                derniere=$(gh api "repos/${depot}/tags" --jq '.[0].name' 2>/dev/null || echo "?")
+              else
+                derniere=$(gh api "repos/${depot}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "?")
+              fi
+              if [ "${derniere#v}" = "$epingle" ]; then etat="à jour"; else etat="**${derniere}**"; fi
+              echo "| ${depot} | ${epingle} | ${etat} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        env:
+          ACTIONLINT: ${{ steps.actionlint.outcome }}
+          ZIZMOR: ${{ steps.zizmor.outcome }}
+        run: |
+          libelle() { case "$1" in success) echo "OK" ;; failure) echo "**ÉCHEC**" ;; *) echo "non exécuté" ;; esac; }
+          {
+            echo "### Workflows"
+            echo "| Contrôle | Résultat |"
+            echo "|---|---|"
+            echo "| actionlint | $(libelle "$ACTIONLINT") |"
+            echo "| zizmor | $(libelle "$ZIZMOR") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$ACTIONLINT" = success ] && [ "$ZIZMOR" = success ]
+
+  # 5. Publication des rapports SARIF dans l'onglet Security.
+  sarif:
+    name: Publication SARIF (code scanning)
+    needs: [secrets, dependances-go, dependances-osv, semgrep, workflows]
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # lecture du dépôt (empreintes des alertes)
+      security-events: write # publication dans l'onglet Security
+    strategy:
+      fail-fast: false
+      matrix:
+        rapport:
+          - { fichier: gitleaks-git.sarif, categorie: gitleaks-historique }
+          - { fichier: govulncheck.sarif, categorie: govulncheck }
+          - { fichier: osv-scanner.sarif, categorie: osv-scanner }
+          - { fichier: semgrep.sarif, categorie: semgrep }
+          - { fichier: zizmor.sarif, categorie: zizmor }
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Récupération des rapports SARIF
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sarif-*
+          path: sarif-recus
+          merge-multiple: true
+
+      - name: Publication ${{ matrix.rapport.categorie }}
+        if: ${{ hashFiles(format('sarif-recus/{0}', matrix.rapport.fichier)) != '' }}
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: sarif-recus/${{ matrix.rapport.fichier }}
+          category: ${{ matrix.rapport.categorie }}
+
+  # 6. Exécutions planifiées ou manuelles : ouvre (ou ferme) le ticket d'alerte.
+  alerte:
+    name: Alerte
+    needs: [secrets, dependances-go, dependances-osv, revue-dependances, semgrep, codeql, workflows, sarif]
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # récupération de l'action locale .github/actions/alert
+      issues: write # ouverture, mise à jour ou fermeture du ticket d'alerte
+    steps:
+      - name: Récupération du dépôt
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Synthèse des contrôles
+        id: synthese
+        env:
+          RESULTATS: ${{ toJSON(needs) }}
+          URL_EXECUTION: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          noms='{"secrets":"Secrets (gitleaks)","dependances-go":"Dépendances (go mod verify, govulncheck)",
+            "dependances-osv":"Dépendances (OSV-Scanner)","revue-dependances":"Revue des dépendances (PR)",
+            "semgrep":"Code (Semgrep)","codeql":"Code (CodeQL)",
+            "workflows":"Workflows (zizmor, actionlint)","sarif":"Publication SARIF"}'
+          if echo "$RESULTATS" | jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' > /dev/null; then
+            statut=failure
+          else
+            statut=success
+          fi
+          corps="$RUNNER_TEMP/alerte-securite.md"
+          {
+            if [ "$statut" = failure ]; then
+              echo "Au moins un contrôle de sécurité du dépôt a échoué."
+            else
+              echo "Tous les contrôles de sécurité du dépôt sont passés."
+            fi
+            echo
+            echo "| Contrôle | Résultat |"
+            echo "|---|---|"
+            echo "$RESULTATS" | jq -r --argjson noms "$noms" 'to_entries[] | .value.result as $r
+              | "| \($noms[.key] // .key) | \({"success":"OK","failure":"**ÉCHEC**","cancelled":"**interrompu**","skipped":"non exécuté"}[$r] // $r) |"'
+            echo
+            echo "Exécution : ${URL_EXECUTION}"
+            echo
+            echo "Rapports : artefacts « sarif-* » de l'exécution."
+          } > "$corps"
+          cat "$corps" >> "$GITHUB_STEP_SUMMARY"
+          echo "statut=$statut" >> "$GITHUB_OUTPUT"
+          echo "corps=$corps" >> "$GITHUB_OUTPUT"
+
+      - name: Alerte
+        uses: ./.github/actions/alert
+        with:
+          key: securite-depot
+          status: ${{ steps.synthese.outputs.statut }}
+          title: "Sécurité du dépôt : contrôle(s) en échec"
+          body-file: ${{ steps.synthese.outputs.corps }}
+          github-token: ${{ github.token }}
+          webhook-url: ${{ secrets.ALERT_WEBHOOK_URL }}

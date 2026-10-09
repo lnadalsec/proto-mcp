@@ -13,6 +13,11 @@ updates:
       time: "14:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
+    # Délai avant de proposer une nouvelle version : les versions compromises sont
+    # en général retirées en quelques jours. Les correctifs de sécurité n'y sont pas soumis.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     groups:
       go-deps:
         patterns:
@@ -31,10 +36,18 @@ updates:
       - dependency-name: "github.com/go-resty/resty/v2"
 
   - package-ecosystem: github-actions
-    directory: "/"
+    directories:
+      - /
+      - /.github/actions/*
     schedule:
       interval: weekly
       day: monday
       time: "14:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        applies-to: version-updates
+        update-types: [minor, patch]
