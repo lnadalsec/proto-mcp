@@ -14,13 +14,14 @@
   SecAccessControlCreateWithFlags(..., kSecAccessControlUserPresence),
   which the data-protection keychain only honors when this entitlement
   is present and profile-authorized — otherwise OSStatus -34018.
+
+  Applied ONLY to protonmcp and protonmcpd (the Keychain users) by
+  build-app.sh; the shim and the Swift helpers get the empty
+  scripts/protonmcp.entitlements. No hardened-runtime exception
+  (allow-unsigned-executable-memory was dropped: Go does not need it).
 -->
 <plist version="1.0">
 <dict>
-    <!-- Carried over from the bare-binary entitlements (Go/cgo runtime). -->
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-
     <!-- D37: restricted. Requires the embedded provisioning profile. -->
     <key>keychain-access-groups</key>
     <array>

@@ -163,12 +163,17 @@ func IsRuntimeProcess(pid int) bool {
 	return hasExecutableNamed(pid, DaemonBinary, ServeStdioBinary)
 }
 
+// pgrepPath is absolute so a PATH entry ahead of /usr/bin (writable by
+// the user, e.g. ~/bin or Homebrew's prefix) can't substitute pgrep and
+// lie about which PIDs are running.
+const pgrepPath = "/usr/bin/pgrep"
+
 // pgrepPIDs runs pgrep with the given arguments and returns the PIDs
 // it printed. A non-zero exit (pgrep's "no match") yields nil rather
 // than an error: callers union several sources, and one source
 // finding nothing is not a failure of the search.
 func pgrepPIDs(args ...string) []int {
-	out, err := exec.Command("pgrep", args...).Output()
+	out, err := exec.Command(pgrepPath, args...).Output()
 	if err != nil {
 		return nil
 	}

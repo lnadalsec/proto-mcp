@@ -17,7 +17,7 @@
 #   NOTARY_PROFILE       notarytool keychain profile name (default: protonmcp-notary)
 # Optional env:
 #   BUNDLE_ID            default: zone.dort.protonmcp  (see PROTO-112 — finalize before release)
-#   VERSION              default: 0.0.0-dev
+#   VERSION              default: 0.0.0 (X.Y.Z only)
 #
 # Usage:
 #   export DEVELOPER_ID='Developer ID Application: Your Name (ABCDE12345)'
@@ -35,7 +35,24 @@ cd "$(dirname "$0")/.."
 : "${PROVISION_PROFILE:?set PROVISION_PROFILE — path to the downloaded .provisionprofile}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-protonmcp-notary}"
 BUNDLE_ID="${BUNDLE_ID:-zone.dort.protonmcp}"
-VERSION="${VERSION:-0.0.0-dev}"
+VERSION="${VERSION:-0.0.0}"
+
+# All three are spliced into plists with sed: validate before use so a
+# '/' or '&' can't break the substitution or inject XML.
+if ! [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+    echo "error: TEAM_ID must be the 10-character Apple Team ID (got '$TEAM_ID')." >&2
+    exit 1
+fi
+if ! [[ "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+    echo "error: BUNDLE_ID must be reverse-DNS (letters, digits, '-', '.'), got '$BUNDLE_ID'." >&2
+    exit 1
+fi
+# Same rule as release.sh / release.yml: plain X.Y.Z (the daemon's
+# anti-downgrade check can only order those).
+if ! [[ "$VERSION" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]; then
+    echo "error: VERSION must be X.Y.Z, got '$VERSION'." >&2
+    exit 1
+fi
 
 if [ ! -f "$PROVISION_PROFILE" ]; then
     echo "error: PROVISION_PROFILE not found: $PROVISION_PROFILE" >&2
@@ -76,11 +93,26 @@ sed -e "s/__TEAM_ID__/$TEAM_ID/g" -e "s/__BUNDLE_ID__/$BUNDLE_ID/g" \
     scripts/proto-mcp.app.entitlements.template > "$ENTITLEMENTS"
 
 # 3. Sign — inner Mach-Os first, then the bundle, all with hardened
-# runtime + the D37 entitlements + a secure timestamp. Nested binaries
-# must be signed before the enclosing bundle (codesign --deep is
-# discouraged; sign explicitly inside-out).
+# runtime + a secure timestamp. Nested binaries must be signed before
+# the enclosing bundle (codesign --deep is discouraged; sign explicitly
+# inside-out).
+#
+# Least privilege: only the binaries that link internal/keystore and
+# actually read or write the session blob get the restricted
+# keychain-access-groups entitlement — protonmcp (login / logout /
+# setup) and protonmcpd (unlock). The shim is a byte pump and the two
+# Swift helpers never touch the Keychain, so they get the base
+# hardened-runtime entitlements and nothing else. If one of them were
+# ever compromised it should not inherit access to the keychain group.
 echo "--- (3/7) codesign (inside-out) ---"
-for b in protonmcp-shim protonmcp-touchid protonmcp-lockwatch protonmcpd protonmcp; do
+BASE_ENTITLEMENTS="scripts/protonmcp.entitlements"
+for b in protonmcp-shim protonmcp-touchid protonmcp-lockwatch; do
+    codesign --force --timestamp --options runtime \
+        --entitlements "$BASE_ENTITLEMENTS" \
+        --sign "$DEVELOPER_ID" \
+        "$MACOS/$b"
+done
+for b in protonmcpd protonmcp; do
     codesign --force --timestamp --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$DEVELOPER_ID" \
@@ -102,7 +134,9 @@ codesign -d --entitlements :- "$APP" 2>/dev/null | grep -A2 keychain-access-grou
 echo "--- (5/7) notarize (1-5 min round trip) ---"
 ZIP="build/proto-mcp.app.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+# notarize.sh fails unless Apple's status is Accepted (`submit --wait`
+# alone exits 0 on Invalid, and stapling would then fail confusingly).
+scripts/notarize.sh "$ZIP" "$NOTARY_PROFILE"
 
 # 6. Staple the ticket onto the .app.
 echo "--- (6/7) staple ---"

@@ -112,3 +112,36 @@ func TestResolveLockwatchPathMissing(t *testing.T) {
 		t.Errorf("expected no helper, got %q", got)
 	}
 }
+
+// TestResolveLockwatchPathEnvOverrideRefusedInProduction: outside
+// `go test`, PROTONMCP_LOCKWATCH must not redirect the helper. A
+// substitute that never reports screen_locked/sleep would silently
+// disable auto-lock, and the env var comes from an untrusted parent.
+func TestResolveLockwatchPathEnvOverrideRefusedInProduction(t *testing.T) {
+	prefix := t.TempDir()
+	daemon := filepath.Join(prefix, "protonmcpd")
+	mkHelper(t, daemon)
+	discovered := filepath.Join(prefix, "protonmcp-lockwatch")
+	mkHelper(t, discovered)
+
+	fake := filepath.Join(t.TempDir(), "fake-lockwatch")
+	mkHelper(t, fake)
+	t.Setenv("PROTONMCP_LOCKWATCH", fake)
+
+	// Sanity: under tests the override is honoured.
+	if got, ok := ResolveLockwatchPathFrom(daemon); !ok || got != fake {
+		t.Fatalf("test-mode override not honoured: got %q ok=%v", got, ok)
+	}
+
+	orig := lockwatchEnvOverrideAllowed
+	lockwatchEnvOverrideAllowed = func() bool { return false }
+	t.Cleanup(func() { lockwatchEnvOverrideAllowed = orig })
+
+	got, ok := ResolveLockwatchPathFrom(daemon)
+	if !ok {
+		t.Fatal("discovery should still find the installed helper")
+	}
+	if got != discovered {
+		t.Errorf("production resolution used %q, want the discovered %q", got, discovered)
+	}
+}

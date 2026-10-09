@@ -73,11 +73,14 @@ jobs:
 
       # Lancé à la main depuis une branche, GITHUB_REF_NAME vaudrait « main »
       # et l'archive s'appellerait protonmcp-main.tar.gz.
+      # Même règle que scripts/release.sh et bootstrap-tap.sh : X.Y.Z strict,
+      # sans pré-version. Le contrôle anti-retour arrière du daemon
+      # (cmd/protonmcpd/integrity.go) ne sait ordonner que X.Y.Z.
       - name: Exécution depuis un tag vX.Y.Z uniquement
         env:
           REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ "$REF_TYPE" != tag ] || ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+          if [ "$REF_TYPE" != tag ] || ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$'; then
             echo "::error title=Release::lancer depuis un tag vX.Y.Z (ref actuelle : $GITHUB_REF_NAME)"
             exit 1
           fi
