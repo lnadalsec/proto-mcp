@@ -12,8 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
 )
 
 // D24 (Phase 7/C) — binary integrity check at daemon startup.
@@ -38,6 +42,13 @@ import (
 //     proto-mcp` left the daemon permanently down with no
 //     user-visible explanation, because launchd's
 //     KeepAlive{SuccessfulExit:false} honours the clean exit below.
+//     Only if the embedded release version (internal/buildinfo) is not
+//     older than the last accepted one (accepted_version): every old
+//     release is validly signed too, so the signature alone would let
+//     a vulnerable older build be swapped in (anti-downgrade).
+//   * Hash mismatch, signed but older than accepted_version (or the
+//     floor is malformed, or the binary carries no release version) →
+//     refuse, same exit path as below.
 //   * Hash mismatch, signature absent / ad-hoc / wrong team → refuse
 //     to start with a clear error to stderr, then exit 0 (PROTO-113)
 //     so launchd leaves the daemon down instead of respawning it into
@@ -72,6 +83,29 @@ func VerifyBinaryIntegrity(logger *slog.Logger) error {
 			"err", err.Error())
 		return nil
 	}
+	return verifyIntegrity(logger, integrityInputs{
+		expectedPath: expectedPath,
+		versionPath:  filepath.Join(filepath.Dir(expectedPath), acceptedVersionFile),
+		executable:   os.Executable,
+		version:      buildinfo.Version(),
+		verifySig:    verifyDeveloperIDSignature,
+	})
+}
+
+// integrityInputs carries everything verifyIntegrity reads from the
+// environment, so tests can drive the downgrade logic with a fake
+// signature check and an arbitrary embedded version instead of needing
+// a real Developer-ID-signed binary.
+type integrityInputs struct {
+	expectedPath string                 // expected_sha256 record
+	versionPath  string                 // accepted_version floor
+	executable   func() (string, error) // os.Executable in production
+	version      string                 // buildinfo.Version() of the running binary
+	verifySig    func(path string) error
+}
+
+func verifyIntegrity(logger *slog.Logger, in integrityInputs) error {
+	expectedPath := in.expectedPath
 	expected, recordedPath, err := readExpectedSha256(expectedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -87,7 +121,7 @@ func VerifyBinaryIntegrity(logger *slog.Logger) error {
 		return nil
 	}
 
-	exe, err := os.Executable()
+	exe, err := in.executable()
 	if err != nil {
 		return fmt.Errorf("integrity check: os.Executable: %w", err)
 	}
@@ -110,21 +144,8 @@ func VerifyBinaryIntegrity(logger *slog.Logger) error {
 		// legitimate upgrade, and cannot be forged by the local
 		// attacker this check exists to stop (they'd need our signing
 		// key). If it holds, re-record the hash and carry on.
-		if sigErr := verifyDeveloperIDSignature(exe); sigErr == nil {
-			logger.Warn("binary changed since install; signature still trusted, re-recording hash",
-				"path", exe,
-				"was", expected[:16]+"…",
-				"now", actual[:16]+"…",
-				"team_id", expectedTeamID)
-			if werr := rewriteExpectedSha256(expectedPath, actual, exe); werr != nil {
-				// The signature check already passed, which is the
-				// real authorization. A failed re-record just means
-				// we'll repeat this dance next launch.
-				logger.Warn("could not re-record expected_sha256",
-					"path", expectedPath, "err", werr.Error())
-			}
-			return nil
-		} else {
+		sigErr := in.verifySig(exe)
+		if sigErr != nil {
 			// Not signed by us — this is the swap the check is for.
 			// Ad-hoc-signed source builds land here too, which is
 			// correct: they get the strict hash pin, since there's no
@@ -143,11 +164,158 @@ func VerifyBinaryIntegrity(logger *slog.Logger) error {
 				exe, actual, expected, recordedPath, sigErr, expectedTeamID,
 			)
 		}
+
+		// A valid signature proves the binary is ours, not that it is
+		// CURRENT. Every release we ever shipped carries the same
+		// signature, including ones with since-fixed vulnerabilities,
+		// so without this check an attacker could drop an old signed
+		// build in place and the self-heal would bless it. Only an
+		// operator-run `protonmcp daemon install` (which re-pins the
+		// hash and so never reaches this branch) may go backwards.
+		if derr := checkNotDowngrade(in.versionPath, in.version); derr != nil {
+			return fmt.Errorf(
+				"binary integrity check FAILED\n"+
+					"  running:   %s\n"+
+					"  running sha256:    %s\n"+
+					"  expected (from install): %s\n"+
+					"  version check: %v\n"+
+					"  The binary is validly signed (team %s) but is not at least "+
+					"the last version this daemon accepted, so it was not re-pinned "+
+					"automatically. If you downgraded on purpose, re-run "+
+					"`protonmcp daemon install`",
+				exe, actual, expected, derr, expectedTeamID,
+			)
+		}
+
+		logger.Warn("binary changed since install; signature still trusted, re-recording hash",
+			"path", exe,
+			"was", expected[:16]+"…",
+			"now", actual[:16]+"…",
+			"version", in.version,
+			"team_id", expectedTeamID)
+		if werr := rewriteExpectedSha256(expectedPath, actual, exe); werr != nil {
+			// The signature check already passed, which is the
+			// real authorization. A failed re-record just means
+			// we'll repeat this dance next launch.
+			logger.Warn("could not re-record expected_sha256",
+				"path", expectedPath, "err", werr.Error())
+		}
+		recordAcceptedVersion(logger, in.versionPath, in.version)
+		return nil
 	}
 
+	// The hash matches the operator's own install record, the strongest
+	// consent available here: record this version as the floor even if
+	// it is lower than the previous one (a deliberate downgrade
+	// followed by `protonmcp daemon install`).
+	recordAcceptedVersion(logger, in.versionPath, in.version)
 	logger.Info("binary integrity check passed",
 		"sha256", actual[:16]+"…")
 	return nil
+}
+
+// acceptedVersionFile sits next to expected_sha256 and holds the
+// release version ("1.2.3") of the last daemon binary that passed the
+// integrity check. It is the anti-downgrade floor for the signature
+// self-heal path.
+//
+// Like expected_sha256 it is writable by the user the daemon runs as,
+// so it does not stop an attacker already executing as that user (who
+// could equally rewrite the hash record). It stops the narrower swap
+// of an older, signed, vulnerable protonmcpd over the installed one
+// without touching the records. See docs/security.md.
+const acceptedVersionFile = "accepted_version"
+
+// releaseVersionRE matches the versions release builds are stamped
+// with (the Makefile strips the tag's leading "v"). Anything else —
+// "dev", a `git describe` string like "1.0.2-3-gabc1234", "-dirty" —
+// is not a release and cannot be ordered against one.
+var releaseVersionRE = regexp.MustCompile(`^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})$`)
+
+// parseReleaseVersion returns the numeric major/minor/patch of a
+// release version string, or ok=false if s is not one.
+func parseReleaseVersion(s string) (v [3]int, ok bool) {
+	m := releaseVersionRE.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return v, false
+	}
+	for i := range v {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
+}
+
+// compareVersions returns -1, 0 or +1 as a is older than, equal to or
+// newer than b.
+func compareVersions(a, b [3]int) int {
+	for i := range a {
+		switch {
+		case a[i] < b[i]:
+			return -1
+		case a[i] > b[i]:
+			return 1
+		}
+	}
+	return 0
+}
+
+// checkNotDowngrade returns nil if candidate may be auto-accepted on
+// the signature path given the floor recorded at versionPath.
+//
+//   - No floor recorded (install predating this check): accept. The
+//     first accepted start records one.
+//   - Floor unreadable or malformed: refuse. Treating it as missing
+//     would let anyone able to corrupt the file switch the check off.
+//   - Candidate not a release version: refuse. Signed release builds
+//     are always stamped; an unstamped signed binary cannot be ordered.
+//   - Candidate older than the floor: refuse. Equal is fine — a
+//     re-signed build of the same release is not a downgrade.
+func checkNotDowngrade(versionPath, candidate string) error {
+	data, err := os.ReadFile(versionPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("version floor %s unreadable: %w", versionPath, err)
+	}
+	floorStr := strings.TrimSpace(string(data))
+	floor, ok := parseReleaseVersion(floorStr)
+	if !ok {
+		return fmt.Errorf("version floor %s is malformed (%q)", versionPath, floorStr)
+	}
+	cand, ok := parseReleaseVersion(candidate)
+	if !ok {
+		return fmt.Errorf("running version %q is not a release version; "+
+			"cannot compare it with last accepted %s", candidate, floorStr)
+	}
+	if compareVersions(cand, floor) < 0 {
+		return fmt.Errorf("downgrade refused: running version %s is older than "+
+			"last accepted %s", candidate, floorStr)
+	}
+	return nil
+}
+
+// recordAcceptedVersion stores version as the new floor. Non-release
+// versions (source builds) are not recorded: they cannot be ordered,
+// and recording "dev" would make the next signed upgrade trip the
+// malformed-floor rule. Failures are logged, not fatal — the integrity
+// decision has already been made.
+func recordAcceptedVersion(logger *slog.Logger, versionPath, version string) {
+	if _, ok := parseReleaseVersion(version); !ok {
+		return
+	}
+	version = strings.TrimSpace(version)
+	if cur, err := os.ReadFile(versionPath); err == nil && strings.TrimSpace(string(cur)) == version {
+		return
+	}
+	if err := writeFileAtomic(versionPath, version+"\n"); err != nil {
+		logger.Warn("could not record accepted version",
+			"path", versionPath, "err", err.Error())
+	}
 }
 
 // expectedTeamID is the Apple Developer Team identifier that signs
@@ -216,16 +384,20 @@ func verifyDeveloperIDSignature(path string) error {
 // a crash mid-write can't leave a truncated record that the next launch
 // would read as "malformed" and skip.
 func rewriteExpectedSha256(path, hash, binPath string) error {
-	line := hash + "  " + binPath + "\n"
+	return writeFileAtomic(path, hash+"  "+binPath+"\n")
+}
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".expected_sha256-*")
+// writeFileAtomic writes content to path at 0600 through a temp file
+// in the same directory plus rename.
+func writeFileAtomic(path, content string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
 
-	if _, err := tmp.WriteString(line); err != nil {
+	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close()
 		return err
 	}
