@@ -315,6 +315,11 @@ jobs:
             --config p/golang --config p/gosec --config p/swift --config p/trailofbits \
             --config p/secrets --config p/github-actions --config p/security-audit \
             --sarif-output=sarif/semgrep.sarif --text
+          # Les résultats neutralisés par « nosemgrep » (justifiés dans le code)
+          # restent dans le SARIF ; code scanning les afficherait comme ouverts.
+          python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f))
+          for r in d["runs"]: r["results"]=[x for x in r["results"] if not x.get("suppressions")]
+          json.dump(d, open(f,"w"))' sarif/semgrep.sarif
 
       - name: Rapports SARIF (artefact)
         if: ${{ !cancelled() }}
