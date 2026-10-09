@@ -88,6 +88,7 @@ var dumpBodyTokenRE = regexp.MustCompile(`"(AccessToken|RefreshToken|TwoFactorCo
 // exactly how the PrivateKey leak went unnoticed in the first place.
 // Matches the JSON-escaped form too, since "\n" inside a JSON string is a
 // literal backslash-n and never breaks the run.
+// nosemgrep: generic.secrets.security.detected-pgp-private-key-block.detected-pgp-private-key-block -- redaction pattern, not a key
 var dumpArmoredKeyRE = regexp.MustCompile(`(?s)-----BEGIN PGP PRIVATE KEY BLOCK-----.*?-----END PGP PRIVATE KEY BLOCK-----`)
 
 // redactDump scrubs an httputil.Dump* output before printing. Three

@@ -40,6 +40,7 @@ func saveProtected(service, account, label string, data []byte) error {
 		cstr(label), C.int(len(label)),
 		// CFData copies the bytes internally; no lifetime concern
 		// from the Go side after the call returns.
+		// nosemgrep: go.lang.security.audit.unsafe.use-of-unsafe-block -- cgo buffer, length passed alongside
 		unsafe.Pointer(&data[0]), C.int(len(data)),
 	)
 	if status != 0 {
@@ -63,6 +64,7 @@ func cstr(s string) *C.char {
 	}
 	// unsafe.Pointer of the first byte; cgo handles pinning for
 	// the duration of the call.
+	// nosemgrep: go.lang.security.audit.unsafe.use-of-unsafe-block -- read-only view for cgo, length passed alongside
 	return (*C.char)(unsafe.Pointer(unsafe.StringData(s)))
 }
 

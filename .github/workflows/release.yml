@@ -94,9 +94,10 @@ jobs:
           set -euo pipefail
           # Random keychain password — never reused, lifecycle == job.
           # Utilisé seulement dans cette étape : ne pas l'exporter dans $GITHUB_ENV,
-          # où toutes les étapes suivantes (dont l'action tierce de release) le liraient.
+          # où toutes les étapes suivantes le liraient.
+          # Jamais affiché, donc pas de commande add-mask (qui l'écrirait elle-même dans
+          # le journal si les commandes de workflow étaient suspendues).
           KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
-          echo "::add-mask::$KEYCHAIN_PASSWORD"
 
           # Decode the .p12.
           echo "$CERT_P12_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"

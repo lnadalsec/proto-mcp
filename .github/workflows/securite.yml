@@ -205,6 +205,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # OSV-Scanner appelle la toolchain Go pour l'analyse d'appels de go.mod.
+      - name: Installation de Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
       - name: Installation d'OSV-Scanner
         run: |
           binaire="$RUNNER_TEMP/osv-scanner"
