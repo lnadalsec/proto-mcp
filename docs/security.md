@@ -86,6 +86,42 @@ anything a sender chose to put in it.
 - **Write authorization.** Every state-changing tool is deny-by-default
   in policy and fires a per-call Touch ID prompt showing the literal
   recipients and subject. `mail_send` has TTL 0 — every send re-prompts.
+  Send-family dialogs (`mail_send`, `mail_reply`, `mail_reply_all`,
+  `mail_forward`, `mail_send_draft`) also show the body's length and its
+  first 300 characters (flattened to one line, HTML reduced to text,
+  quoted `>` lines kept), and every attachment name: a reply that
+  smuggles mailbox data to the attacker's own address shows that data
+  before you approve. The excerpt is built from the same arguments or
+  draft snapshot that is sent. It is an excerpt: a long body can still
+  hide content past the first 300 characters, which is why the total
+  length is shown.
+- **Drafts are pending sends.** `mail_draft_update` prompts (TTL 0) with
+  the recipients after the edit, every address added or removed, and the
+  new body — an injected edit can't quietly add a BCC to a draft you
+  later send from Proton's web app. Fields the call doesn't touch are
+  kept as stored: the sender address, and the body byte for byte (only a
+  new `body_html` is sanitized). `mail_draft_create` stays allow: a new
+  draft has no effect until a send, which prompts.
+- **Recipient allowlist before the prompt.** Where `allowed_recipients`
+  is set, recipients are checked as bare addresses (display names
+  stripped, multi-address entries split) for every send tool. For
+  `mail_reply`, `mail_reply_all` and `mail_send_draft`, whose
+  recipients come from a fetched message, the check runs right after
+  that fetch — before the Touch ID dialog and before any draft is
+  created; a draft created for a send that then fails before
+  `SendDraft` is deleted.
+- **Replies honor Reply-To.** A reply goes to the parent's `Reply-To`
+  when set (as in any mail client), else to its sender. `Reply-To` is
+  sender-controlled, so when it differs from the sender the dialog says
+  so on its own line.
+- **Saved attachments are quarantined.** `mail_save_attachment` sets
+  `com.apple.quarantine` on the file before writing its content, so
+  Gatekeeper checks a `.app` / `.command` / `.pkg` from an email like
+  any other download. If the attribute can't be set, nothing is saved
+  (fail closed). The dialog shows the real sanitized filename (resolved
+  from the message when the call doesn't name one) and warns about
+  executable / installer types and double extensions such as
+  `invoice.pdf.app`.
 - **Binary tampering.** Hardened-runtime, signed, notarized binaries
   plus a SHA-256 self-check that refuses to run a swapped binary.
 - **Log leakage.** Secrets are redacted; bodies are reduced to
@@ -189,7 +225,7 @@ Subject` and `label_id → Name` from the local mirror. You read what
 you're approving.
 
 For sends, the format is stricter — the recipient list is always
-verbatim:
+verbatim, followed by the subject, a body excerpt and the attachments:
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -197,7 +233,10 @@ verbatim:
 │                                              │
 │ To: alice@example.com                        │
 │ CC: charlie@example.com                      │
+│ BCC: (none)                                  │
 │ Subject: Re: gear list                       │
+│ Body (49 chars): Tent and stove are in the   │
+│ garage, see you Friday.                      │
 │                                              │
 │ [ Cancel ]              [ Send & Touch ID ]  │
 └──────────────────────────────────────────────┘

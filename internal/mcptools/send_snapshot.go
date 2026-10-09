@@ -11,6 +11,8 @@ import (
 	"time"
 
 	gpa "github.com/ProtonMail/go-proton-api"
+
+	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
 )
 
 // --- Issue #116: the approval dialog and the send act on one snapshot ---
@@ -18,7 +20,7 @@ import (
 // mail_send_draft / mail_reply / mail_reply_all used to fetch the
 // draft or parent twice: once to render the Touch ID dialog, once in
 // the handler to build the send. A concurrent mail_draft_update
-// (decision: allow, and the daemon serves several connections) could
+// (then decision: allow, and the daemon serves several connections) could
 // rewrite the draft while the dialog was up, so the user approved one
 // set of recipients and a different one was sent.
 //
@@ -30,6 +32,8 @@ import (
 // same lock, so it can't slip in between that check and SendDraft.
 // Edits made outside this daemon (the Proton web UI) can still land
 // in that last round-trip — those are the user's own hands.
+// mail_draft_update itself now prompts too, on the same design: its
+// dialog and its write share one fetch of the draft.
 
 // draftLocks serializes mutation of a draft (mail_draft_update)
 // against its verify-and-send (mail_send_draft). Package-level:
@@ -102,7 +106,26 @@ func draftPromptSnapshot(deps Deps) func(context.Context, json.RawMessage) (stri
 		if err != nil {
 			return "", "", nil, fmt.Errorf("fetch draft: %w", err)
 		}
-		title, body, err := sendApprovalDialog("mail_send_draft", draftPromptBody(draft))
+		// The recipients are known now: refuse before the dialog
+		// rather than ask the user to approve a send the allowlist
+		// will deny anyway.
+		if bad := allowlistViolation(deps, "mail_send_draft", policy.Caller{}, allRecipients(
+			addressStrings(draft.ToList), addressStrings(draft.CCList), addressStrings(draft.BCCList),
+		)); bad != "" {
+			return "", "", nil, fmt.Errorf("recipient %s not on allowlist", bad)
+		}
+		// The dialog shows the body that will be sent; a draft whose
+		// body can't be read can't be shown, so it isn't approvable
+		// (sendDraftByID would fail on it too).
+		kr, err := draftKeyring(deps, draft)
+		if err != nil {
+			return "", "", nil, err
+		}
+		plain, err := decryptDraftBody(kr, draft.Body)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("read draft body: %w", err)
+		}
+		title, body, err := sendApprovalDialog("mail_send_draft", draftPromptBody(draft, plain))
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -111,11 +134,12 @@ func draftPromptSnapshot(deps Deps) func(context.Context, json.RawMessage) (stri
 }
 
 // draftPromptBody renders everything about a draft that decides where
-// it goes and what rides along: every recipient, the subject, and
-// every attachment (all of them — the snapshot check compares all of
-// them, so the dialog shows all of them). Recipients come first and
-// as bare addresses (issue #125).
-func draftPromptBody(d gpa.Message) string {
+// it goes and what rides along: every recipient, the subject, an
+// excerpt of the body (plainBody, the decrypted draft.Body) and every
+// attachment (all of them — the snapshot check compares all of them,
+// so the dialog shows all of them). Recipients come first and as bare
+// addresses (issue #125).
+func draftPromptBody(d gpa.Message, plainBody string) string {
 	parts := []string{"Send draft " + capField(d.ID, promptNameMaxRunes)}
 	parts = append(parts, recipientLines(
 		addressStrings(d.ToList),
@@ -123,6 +147,7 @@ func draftPromptBody(d gpa.Message) string {
 		addressStrings(d.BCCList),
 	)...)
 	parts = append(parts, "Subject: "+capField(d.Subject, promptSubjectMaxRunes))
+	parts = append(parts, bodyExcerptLine(plainBody, string(d.MIMEType)))
 	if s := messageAttachmentsList(d.Attachments); s != "" {
 		parts = append(parts, "Attachments: "+s)
 	}
@@ -213,10 +238,7 @@ func sameAttachments(a, b []gpa.Attachment) bool {
 // computed by the same replyRecipients call from the same parent.
 func replyPromptSnapshot(deps Deps, toolName string, replyAll bool) func(context.Context, json.RawMessage) (string, string, any, error) {
 	return func(ctx context.Context, args json.RawMessage) (string, string, any, error) {
-		var in struct {
-			InReplyTo   string                `json:"in_reply_to"`
-			Attachments []sendAttachmentInput `json:"attachments,omitempty"`
-		}
+		var in replyInput
 		_ = json.Unmarshal(args, &in)
 		if in.InReplyTo == "" {
 			return "", "", nil, errors.New("in_reply_to is required")
@@ -225,8 +247,13 @@ func replyPromptSnapshot(deps Deps, toolName string, replyAll bool) func(context
 		if err != nil {
 			return "", "", nil, fmt.Errorf("fetch parent: %w", err)
 		}
-		title, body, err := sendApprovalDialog(toolName,
-			replyPromptBody(deps, parent, in.InReplyTo, replyAll, in.Attachments))
+		// The recipients are known now: refuse before the dialog (and
+		// before any draft exists) rather than after.
+		to, cc := replyRecipients(deps, parent, replyAll)
+		if bad := allowlistViolation(deps, toolName, policy.Caller{}, allRecipients(to, cc, nil)); bad != "" {
+			return "", "", nil, fmt.Errorf("recipient %s not on allowlist", bad)
+		}
+		title, body, err := sendApprovalDialog(toolName, replyPromptBody(deps, parent, replyAll, in))
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -234,19 +261,33 @@ func replyPromptSnapshot(deps Deps, toolName string, replyAll bool) func(context
 	}
 }
 
+// replyInput is the parsed input of mail_reply / mail_reply_all.
+type replyInput struct {
+	InReplyTo   string                `json:"in_reply_to"`
+	BodyText    string                `json:"body_text,omitempty"`
+	BodyHTML    string                `json:"body_html,omitempty"`
+	Attachments []sendAttachmentInput `json:"attachments,omitempty"`
+}
+
 // replyPromptBody renders a reply dialog from the fetched parent:
-// recipients first (issue #125), then the subject the reply will
-// carry, then any new attachments.
-func replyPromptBody(deps Deps, parent gpa.Message, parentID string, replyAll bool, attachments []sendAttachmentInput) string {
+// recipients first (issue #125), a note when the parent's Reply-To
+// redirects the reply away from its sender, then the subject the reply
+// will carry, the body and any new attachments.
+func replyPromptBody(deps Deps, parent gpa.Message, replyAll bool, in replyInput) string {
 	verb := "Reply to"
 	if replyAll {
 		verb = "Reply-all to"
 	}
 	to, cc := replyRecipients(deps, parent, replyAll)
-	parts := []string{verb + " message " + capField(parentID, promptNameMaxRunes)}
+	parts := []string{verb + " message " + capField(in.InReplyTo, promptNameMaxRunes)}
 	parts = append(parts, recipientLines(to, cc, nil)...)
+	if rt := replyToAddrs(parent); len(rt) > 0 && parent.Sender != nil && len(addrDiff(rt, []string{parent.Sender.Address})) > 0 {
+		parts = append(parts, "Note: the original was sent by "+joinAddrs([]string{parent.Sender.Address})+
+			" but asks for replies to go to its Reply-To address "+joinAddrs(rt))
+	}
 	parts = append(parts, "Subject: "+capField(replySubject(parent.Subject), promptSubjectMaxRunes))
-	if decoded, err := decodeAndValidateAttachments(deps, attachments); err == nil {
+	parts = append(parts, bodyExcerptLine(outgoingBody(in.BodyText, in.BodyHTML)))
+	if decoded, err := decodeAndValidateAttachments(deps, in.Attachments); err == nil {
 		if s := attachmentsSummary(decoded); s != "" {
 			parts = append(parts, s)
 		}
@@ -278,13 +319,14 @@ func forwardPromptSnapshot(deps Deps) func(context.Context, json.RawMessage) (st
 }
 
 // forwardPromptBody renders a forward dialog: recipients (bare
-// addresses, from args), the subject the forward will carry, new
-// attachments, and — when the call carries them over — every one of
-// the parent's attachments.
+// addresses, from args), the subject the forward will carry, the body,
+// new attachments, and — when the call carries them over — every one
+// of the parent's attachments.
 func forwardPromptBody(deps Deps, parent gpa.Message, in forwardInput) string {
 	parts := []string{"Forward message " + capField(in.ForwardOf, promptNameMaxRunes)}
 	parts = append(parts, recipientLines(promptAddrs(in.To), promptAddrs(in.CC), promptAddrs(in.BCC))...)
 	parts = append(parts, "Subject: "+capField(forwardSubject(parent.Subject), promptSubjectMaxRunes))
+	parts = append(parts, bodyExcerptLine(outgoingBody(in.BodyText, in.BodyHTML)))
 	if decoded, err := decodeAndValidateAttachments(deps, in.Attachments); err == nil {
 		if s := attachmentsSummary(decoded); s != "" {
 			parts = append(parts, s)
@@ -312,23 +354,42 @@ func replySubject(s string) string {
 	return "Re: " + s
 }
 
-// replyRecipients: reply → the original sender; reply-all → sender in
-// To, and the original To+CC minus our own addresses in CC.
+// replyRecipients: reply → the parent's Reply-To addresses when it
+// sets any, else its sender (RFC 5322 §3.6.2, what every mail client
+// does); reply-all → that To, plus the original To+CC minus our own
+// addresses in CC. Reply-To is sender-controlled, so the dialog says
+// when it redirects the reply (replyPromptBody) and the allowlist
+// checks the result like any other recipient.
 func replyRecipients(deps Deps, parent gpa.Message, replyAll bool) (to, cc []string) {
-	to = []string{}
-	if parent.Sender != nil {
-		to = append(to, parent.Sender.Address)
+	to = replyToAddrs(parent)
+	if len(to) == 0 {
+		to = []string{}
+		if parent.Sender != nil {
+			to = append(to, parent.Sender.Address)
+		}
 	}
 	cc = []string{}
 	if replyAll {
 		self := selfAddresses(deps)
 		for _, list := range [][]*mail.Address{parent.ToList, parent.CCList} {
 			for _, a := range list {
-				if a != nil && !contains(self, strings.ToLower(a.Address)) && !contains(to, a.Address) {
+				if a != nil && !contains(self, strings.ToLower(a.Address)) &&
+					len(addrDiff([]string{a.Address}, append(to, cc...))) > 0 {
 					cc = append(cc, a.Address)
 				}
 			}
 		}
 	}
 	return to, cc
+}
+
+// replyToAddrs returns the parent's non-empty Reply-To addresses.
+func replyToAddrs(parent gpa.Message) []string {
+	var out []string
+	for _, a := range parent.ReplyTos {
+		if a != nil && a.Address != "" && len(addrDiff([]string{a.Address}, out)) > 0 {
+			out = append(out, a.Address)
+		}
+	}
+	return out
 }

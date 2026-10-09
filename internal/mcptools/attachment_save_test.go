@@ -30,8 +30,8 @@ func TestMailSaveAttachment_SchemaValid(t *testing.T) {
 	if !json.Valid(tl.OutputSchema) {
 		t.Errorf("OutputSchema not valid JSON")
 	}
-	if tl.PromptBody == nil {
-		t.Error("PromptBody must be set — policy is confirm:true")
+	if tl.PromptSnapshot == nil {
+		t.Error("PromptSnapshot must be set — policy is confirm:true")
 	}
 }
 

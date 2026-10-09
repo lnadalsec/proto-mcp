@@ -32,6 +32,9 @@ func TestLoosenings(t *testing.T) {
 		want     []string // substrings; empty = no loosening
 	}{
 		{"send allowed", "tools:\n  mail_send: {decision: allow}\n", []string{`"mail_send": prompt → allow`}},
+		// mail_draft_update prompts by default: an edited draft is a
+		// pending send (an added BCC rides along when the user sends it).
+		{"draft update allowed", "tools:\n  mail_draft_update: {decision: allow}\n", []string{`"mail_draft_update": prompt → allow`}},
 		{"confirm dropped", "tools:\n  mail_send: {decision: prompt, ttl: \"0\"}\n", []string{`"mail_send": confirmation dialog removed`}},
 		{"ttl raised", "tools:\n  mail_move: {decision: prompt, ttl: 1h}\n", []string{`"mail_move": approval reused for 1h0m0s instead of 5m0s`}},
 		{"unknown tools allowed", "defaults: {decision: allow}\n", []string{"unknown tools: deny → allow"}},

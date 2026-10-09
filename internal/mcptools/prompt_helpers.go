@@ -3,9 +3,12 @@ package mcptools
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/microcosm-cc/bluemonday"
 
 	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
 	"github.com/just-an-oldsalt/proto-mcp/internal/store"
@@ -152,6 +155,43 @@ func orNone(s string) string {
 	}
 	return s
 }
+
+// promptBodyExcerptRunes caps the body excerpt shown in a send dialog.
+const promptBodyExcerptRunes = 300
+
+// bodyExcerptLine renders the message body for a send dialog: its total
+// length and its first promptBodyExcerptRunes characters, flattened to
+// one line. body is exactly what the send will carry (after outbound
+// sanitization for HTML), so a prompt-injected reply that smuggles data
+// to the attacker's own address shows that data at approval time rather
+// than passing as "Reply to attacker@…, Re: …".
+//
+// Plain-text bodies are shown as written: quoted ("> ") lines are NOT
+// dropped (sanitize.Text drops them, which would let exfiltrated text
+// hide behind a quote marker). HTML is reduced to its text content.
+func bodyExcerptLine(body, mimeType string) string {
+	text := body
+	if mimeType == "text/html" {
+		text = html.UnescapeString(promptTextPolicy.Sanitize(body))
+	}
+	// strings.Fields splits on every Unicode space, line and paragraph
+	// separator included, so the excerpt can't open a new dialog line.
+	text = strings.Join(strings.Fields(text), " ")
+	n := utf8.RuneCountInString(text)
+	switch {
+	case n == 0:
+		return "Body: (empty)"
+	case n <= promptBodyExcerptRunes:
+		return fmt.Sprintf("Body (%d chars): %s", n, capField(text, promptBodyExcerptRunes))
+	default:
+		return fmt.Sprintf("Body (%d chars, first %d shown): %s", n, promptBodyExcerptRunes,
+			capField(text, promptBodyExcerptRunes))
+	}
+}
+
+// promptTextPolicy strips every tag (and script / style content) from
+// an HTML body for the dialog excerpt.
+var promptTextPolicy = bluemonday.StrictPolicy()
 
 // sendApprovalDialog is the one exit for every send-family dialog. It
 // sanitizes the body without truncating it, and fails closed with an
