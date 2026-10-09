@@ -10,9 +10,12 @@
 <!-- which Developer ID Application signing alone cannot supply. The -->
 <!-- kernel SIGKILLs the binary at launch if you try. Re-enable as part -->
 <!-- of Phase 7/E .app-bundle work (registered Bundle ID + profile). -->
+<!-- Deliberately EMPTY: the hardened runtime with no exceptions. -->
+<!-- com.apple.security.cs.allow-unsigned-executable-memory used to be -->
+<!-- here; Go (cgo included) and the Swift helpers never map writable -->
+<!-- and executable memory, so it only weakened the runtime. Add an -->
+<!-- exception back only with a crash log proving it is needed. -->
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
 </dict>
 </plist>

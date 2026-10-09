@@ -159,9 +159,10 @@ Apple's notary submission log has the actual reason:
 ```sh
 xcrun notarytool log <submission-id> --keychain-profile protonmcp-notary
 ```
-Common causes: missing entitlement (we keep these minimal), hard-
-linked symbols (Go runtime needs `allow-unsigned-executable-memory`,
-which is already in the entitlements plist).
+Common causes: a binary signed without the hardened runtime or a
+secure timestamp. The entitlements plist is intentionally empty (Go
+needs no `allow-unsigned-executable-memory`). `make notarize` fails
+unless Apple returns `Accepted` and prints the submission id.
 
 **Gatekeeper still warns after publishing**
 The cask installs binaries — Gatekeeper's online ticket lookup

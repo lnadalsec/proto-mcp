@@ -32,6 +32,34 @@ fi
 VERSION="${VERSION_INPUT#v}"
 TAG="v$VERSION"
 
+# Strict X.Y.Z. The value ends up in the cask (via sed), in URLs, and
+# in the binaries' version stamp — and the daemon's anti-downgrade check
+# (cmd/protonmcpd/integrity.go) can only order plain X.Y.Z versions: a
+# signed "1.2.0-rc1" would be refused by the self-heal once a floor
+# exists.
+if ! [[ "$VERSION" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]; then
+    echo "error: version must be X.Y.Z (optionally prefixed with v); got '$VERSION_INPUT'." >&2
+    exit 2
+fi
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+# shellcheck source=scripts/distribution.sh
+. "$REPO_ROOT/scripts/distribution.sh"
+
+# The release is created on $PROTO_MCP_REPO and the tag pushed to
+# origin: they must be the same repository, or the tag and the
+# artifacts land in different places. This is also where a fork has to
+# make the distribution choice explicit (PROTO_MCP_OWNER=...).
+ORIGIN_REPO=$(origin_repo || true)
+if [ "$ORIGIN_REPO" != "$PROTO_MCP_REPO" ]; then
+    echo "error: origin is '${ORIGIN_REPO:-<none>}' but the release target is '$PROTO_MCP_REPO'." >&2
+    echo "  Releasing from a fork? Set PROTO_MCP_OWNER (see scripts/distribution.sh)," >&2
+    echo "  knowing that Formula/proto-mcp.rb still downloads from $PROTO_MCP_FORMULA_REPO." >&2
+    exit 1
+fi
+echo "Release target: $PROTO_MCP_REPO"
+
 # Signing identity. An explicit DEVELOPER_ID always wins; otherwise read
 # it out of the keychain.
 #
@@ -105,9 +133,35 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+# Releases are cut from the tip of main as it exists on origin, never
+# from a feature branch or from local commits nobody else has seen:
+# the tag pushed below must point at reviewed, published history.
+RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
+CURRENT_BRANCH=$(git symbolic-ref --quiet --short HEAD || true)
+if [ "$CURRENT_BRANCH" != "$RELEASE_BRANCH" ]; then
+    echo "error: HEAD is on '${CURRENT_BRANCH:-<detached>}', not '$RELEASE_BRANCH'. Check out $RELEASE_BRANCH first." >&2
+    exit 1
+fi
+if ! git fetch --quiet origin "$RELEASE_BRANCH"; then
+    echo "error: could not fetch origin/$RELEASE_BRANCH to confirm HEAD is pushed." >&2
+    exit 1
+fi
+LOCAL_HEAD=$(git rev-parse HEAD)
+REMOTE_HEAD=$(git rev-parse "refs/remotes/origin/$RELEASE_BRANCH")
+if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
+    echo "error: HEAD ($LOCAL_HEAD) is not origin/$RELEASE_BRANCH ($REMOTE_HEAD)." >&2
+    echo "  Push your commits (or pull) so the tag points at published history." >&2
+    exit 1
+fi
+
 # Tag already exists locally? Refuse — caller should bump.
 if git rev-parse "$TAG" >/dev/null 2>&1; then
     echo "error: tag $TAG already exists locally. Bump the version or delete the tag." >&2
+    exit 1
+fi
+# ... or on origin (pushed from another clone)?
+if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+    echo "error: tag $TAG already exists on origin. Bump the version." >&2
     exit 1
 fi
 
@@ -243,6 +297,8 @@ git tag -a "$TAG" -m "$TAG"
 git push origin "$TAG"
 
 gh release create "$TAG" \
+    --repo "$PROTO_MCP_REPO" \
+    --verify-tag \
     --draft \
     --generate-notes \
     --title "$TAG" \
@@ -253,7 +309,7 @@ echo
 echo "=== Release prepared ==="
 echo
 echo "Draft release URL:"
-gh release view "$TAG" --json url --jq .url
+gh release view "$TAG" --repo "$PROTO_MCP_REPO" --json url --jq .url
 echo
 echo "Next steps:"
 echo "  1. Edit the draft on GitHub to fill in release notes."

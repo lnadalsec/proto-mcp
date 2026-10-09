@@ -3,7 +3,7 @@
 #
 # Homebrew's tap convention: a SEPARATE GitHub repo named
 # `homebrew-<tap-name>`. For us that's:
-#   github.com/just-an-oldsalt/homebrew-proto-mcp
+#   github.com/$PROTO_MCP_OWNER/homebrew-proto-mcp  (owner: scripts/distribution.sh)
 #
 # Inside the tap repo, casks live in `Casks/<token>.rb`. We copy
 # Formula/proto-mcp.rb from this repo to Casks/proto-mcp.rb in the
@@ -28,12 +28,32 @@ set -euo pipefail
 VERSION="${1:-}"
 SHA256="${2:-}"
 
-TAP_OWNER="just-an-oldsalt"
+# Both values are spliced into the cask with sed below. Validate them
+# strictly first: a '|' would terminate the sed expression, a newline
+# or a quote would inject arbitrary Ruby into a cask that every user's
+# `brew install` evaluates.
+if [ -n "$VERSION" ] && ! [[ "$VERSION" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]; then
+    echo "error: version must be X.Y.Z without a leading v (got '$VERSION')." >&2
+    exit 2
+fi
+if [ -n "$SHA256" ] && ! [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "error: sha256 must be 64 lowercase hex characters (got '$SHA256')." >&2
+    exit 2
+fi
+case "${TAP_VISIBILITY:-public}" in
+    public|private) ;;
+    *) echo "error: TAP_VISIBILITY must be 'public' or 'private'." >&2; exit 2;;
+esac
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+# shellcheck source=scripts/distribution.sh
+. "$REPO_ROOT/scripts/distribution.sh"
+
+TAP_OWNER="$PROTO_MCP_OWNER"
 TAP_NAME="homebrew-proto-mcp"
 TAP_FULL="$TAP_OWNER/$TAP_NAME"
 TAP_VISIBILITY="${TAP_VISIBILITY:-public}"
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
 SOURCE_CASK="$REPO_ROOT/Formula/proto-mcp.rb"
 
 if [ ! -f "$SOURCE_CASK" ]; then
@@ -75,19 +95,38 @@ mkdir -p Casks
 # Step 2: copy the cask file. If version + sha256 args supplied,
 # inject them; otherwise keep the placeholder values from the
 # source cask.
+#
+# The owner/repo baked into Formula/proto-mcp.rb is rewritten to
+# $PROTO_MCP_REPO (scripts/distribution.sh). With the default owner
+# that is a no-op; a fork has to opt in with PROTO_MCP_OWNER. Dots in
+# the source pattern are escaped; both sides were validated in
+# distribution.sh, so neither can carry a '|'.
+FORMULA_REPO_RE=${PROTO_MCP_FORMULA_REPO//./\\.}
+REPO_SED="s|github\.com/$FORMULA_REPO_RE|github.com/$PROTO_MCP_REPO|g"
+TAP_SED="s|brew tap ${PROTO_MCP_FORMULA_REPO%%/*}/|brew tap $PROTO_MCP_OWNER/|g"
 if [ -n "$VERSION" ] && [ -n "$SHA256" ]; then
-    echo "Updating cask to version $VERSION + sha256 $SHA256..."
+    echo "Updating cask to version $VERSION + sha256 $SHA256 ($PROTO_MCP_REPO)..."
     # macOS sed needs -i ''; we write to a temp + mv to avoid
     # platform sed flags drifting.
     sed -e "s|version \"0\.0\.0\"|version \"$VERSION\"|" \
         -e "s|sha256 :no_check|sha256 \"$SHA256\"|" \
+        -e "$REPO_SED" -e "$TAP_SED" \
         "$SOURCE_CASK" > Casks/proto-mcp.rb
 elif [ -n "$VERSION" ] || [ -n "$SHA256" ]; then
     echo "error: provide BOTH version and sha256, or neither (for placeholder bootstrap)." >&2
     exit 1
 else
-    echo "Copying cask with placeholder version/sha256 (bootstrap mode)..."
-    cp "$SOURCE_CASK" Casks/proto-mcp.rb
+    echo "Copying cask with placeholder version/sha256 (bootstrap mode, $PROTO_MCP_REPO)..."
+    sed -e "$REPO_SED" -e "$TAP_SED" "$SOURCE_CASK" > Casks/proto-mcp.rb
+fi
+# Belt and braces: the substitutions must have landed exactly once
+# each, or the cask would silently keep placeholder values.
+if [ -n "$VERSION" ]; then
+    if [ "$(grep -c "^  version \"$VERSION\"" Casks/proto-mcp.rb)" -ne 1 ] ||
+       [ "$(grep -c "^  sha256 \"$SHA256\"" Casks/proto-mcp.rb)" -ne 1 ]; then
+        echo "error: version/sha256 substitution did not apply to the cask; check Formula/proto-mcp.rb placeholders." >&2
+        exit 1
+    fi
 fi
 
 # Step 3: README so the tap repo doesn't look abandoned.
@@ -101,14 +140,14 @@ TAP_DISPLAY="$TAP_OWNER/proto-mcp"
 cat > README.md <<EOF
 # homebrew-proto-mcp
 
-Homebrew tap for [proto-mcp](https://github.com/$TAP_OWNER/proto-mcp).
+Homebrew tap for [proto-mcp](https://github.com/$PROTO_MCP_REPO).
 
 \`\`\`sh
 brew tap $TAP_DISPLAY
 brew install --cask proto-mcp
 \`\`\`
 
-This tap is maintained automatically by [bootstrap-tap.sh](https://github.com/$TAP_OWNER/proto-mcp/blob/main/scripts/bootstrap-tap.sh)
+This tap is maintained automatically by [bootstrap-tap.sh](https://github.com/$PROTO_MCP_REPO/blob/main/scripts/bootstrap-tap.sh)
 in the main proto-mcp repo. Don't edit \`Casks/proto-mcp.rb\` here
 directly — the canonical source is \`Formula/proto-mcp.rb\` in the
 main repo, copied here on every release.
