@@ -3,9 +3,9 @@
 # published. Sourced by release.sh and bootstrap-tap.sh; not executable
 # on its own.
 #
-# The default is the upstream project (just-an-oldsalt/proto-mcp),
-# which is also what Formula/proto-mcp.rb downloads from. A fork that
-# publishes its own signed releases must say so explicitly:
+# The default is lnadalsec/proto-mcp, which is also what
+# Formula/proto-mcp.rb downloads from. Another fork that publishes its
+# own signed releases must say so explicitly:
 #
 #   PROTO_MCP_OWNER=<github-owner> make release VERSION=v1.2.3
 #   PROTO_MCP_OWNER=<github-owner> ./scripts/bootstrap-tap.sh 1.2.3 <sha256>
@@ -14,7 +14,7 @@
 # refuses to run when `origin` is not $PROTO_MCP_REPO, so a fork can't
 # end up tagging its own repo while the cask points at another one.
 
-PROTO_MCP_OWNER="${PROTO_MCP_OWNER:-just-an-oldsalt}"
+PROTO_MCP_OWNER="${PROTO_MCP_OWNER:-lnadalsec}"
 PROTO_MCP_REPO_NAME="${PROTO_MCP_REPO_NAME:-proto-mcp}"
 
 # GitHub owner: alphanumerics and single hyphens. Repo: alphanumerics,
@@ -33,7 +33,7 @@ PROTO_MCP_REPO="$PROTO_MCP_OWNER/$PROTO_MCP_REPO_NAME"
 
 # The owner/repo baked into Formula/proto-mcp.rb. bootstrap-tap.sh
 # rewrites it to $PROTO_MCP_REPO in the tap copy (a no-op by default).
-PROTO_MCP_FORMULA_REPO="just-an-oldsalt/proto-mcp"
+PROTO_MCP_FORMULA_REPO="lnadalsec/proto-mcp"
 
 # origin_repo prints "owner/name" for the origin remote, from either
 # the SSH (git@github.com:owner/name.git) or HTTPS form.

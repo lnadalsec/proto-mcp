@@ -330,7 +330,7 @@ release:
 
 # Bootstrap or update the Homebrew tap repo
 # (github.com/$PROTO_MCP_OWNER/homebrew-proto-mcp, owner defaulting to
-# just-an-oldsalt — see scripts/distribution.sh). Without args,
+# lnadalsec — see scripts/distribution.sh). Without args,
 # creates the tap repo (if missing) and pushes a placeholder cask
 # so `brew tap` succeeds. With VERSION + SHA256, updates the cask
 # to point at a real release. See scripts/bootstrap-tap.sh.

@@ -17,7 +17,7 @@
 #   NOTARY_PROFILE       notarytool keychain profile name (default: protonmcp-notary)
 # Optional env:
 #   BUNDLE_ID            default: zone.dort.protonmcp  (see PROTO-112 — finalize before release)
-#   VERSION              default: 0.0.0-dev
+#   VERSION              default: 0.0.0 (X.Y.Z only)
 #
 # Usage:
 #   export DEVELOPER_ID='Developer ID Application: Your Name (ABCDE12345)'
@@ -35,7 +35,7 @@ cd "$(dirname "$0")/.."
 : "${PROVISION_PROFILE:?set PROVISION_PROFILE — path to the downloaded .provisionprofile}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-protonmcp-notary}"
 BUNDLE_ID="${BUNDLE_ID:-zone.dort.protonmcp}"
-VERSION="${VERSION:-0.0.0-dev}"
+VERSION="${VERSION:-0.0.0}"
 
 # All three are spliced into plists with sed: validate before use so a
 # '/' or '&' can't break the substitution or inject XML.
@@ -47,8 +47,10 @@ if ! [[ "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
     echo "error: BUNDLE_ID must be reverse-DNS (letters, digits, '-', '.'), got '$BUNDLE_ID'." >&2
     exit 1
 fi
-if ! [[ "$VERSION" =~ ^[0-9A-Za-z.+-]+$ ]]; then
-    echo "error: VERSION contains unexpected characters: '$VERSION'." >&2
+# Same rule as release.sh / release.yml: plain X.Y.Z (the daemon's
+# anti-downgrade check can only order those).
+if ! [[ "$VERSION" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]; then
+    echo "error: VERSION must be X.Y.Z, got '$VERSION'." >&2
     exit 1
 fi
 
