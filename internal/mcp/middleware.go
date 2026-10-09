@@ -10,12 +10,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
-	"github.com/just-an-oldsalt/proto-mcp/internal/audit"
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcperrors"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/redact"
+	"github.com/lnadalsec/proto-mcp/internal/approval"
+	"github.com/lnadalsec/proto-mcp/internal/audit"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/mcperrors"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/redact"
 )
 
 // firstDisallowedRecipient returns "" if every recipient in extracted

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
 )
 
 func accountWhoami(deps Deps) mcp.Tool {

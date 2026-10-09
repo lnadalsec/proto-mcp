@@ -6,8 +6,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 func TestMailDownloadAttachment_SchemaValid(t *testing.T) {

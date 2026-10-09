@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/cli"
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/cli"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // `protonmcp setup` — the whole first-run flow as one command.

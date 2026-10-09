@@ -9,8 +9,8 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 func seedCal(t *testing.T, st *store.Store, id string) {

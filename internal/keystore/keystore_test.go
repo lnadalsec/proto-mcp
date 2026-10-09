@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // Issue #123: a zeroed-but-not-detached pass keeps its length, so the

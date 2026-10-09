@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcptools"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/mcptools"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 func testEngine(t *testing.T) *policy.Engine {

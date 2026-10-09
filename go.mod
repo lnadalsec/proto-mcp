@@ -1,4 +1,4 @@
-module github.com/just-an-oldsalt/proto-mcp
+module github.com/lnadalsec/proto-mcp
 
 go 1.26.9
 

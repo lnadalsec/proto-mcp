@@ -2,7 +2,7 @@
 
 package policy
 
-import "github.com/just-an-oldsalt/proto-mcp/internal/caller"
+import "github.com/lnadalsec/proto-mcp/internal/caller"
 
 // procExeFor returns the absolute executable path for a given PID
 // on macOS, via libproc's proc_pidpath. Delegates to internal/caller

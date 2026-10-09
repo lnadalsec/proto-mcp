@@ -8,7 +8,7 @@
 //
 // The values below are set with -ldflags -X by the Makefile:
 //
-//	go build -ldflags "-X github.com/just-an-oldsalt/proto-mcp/internal/buildinfo.version=1.0.2 ..."
+//	go build -ldflags "-X github.com/lnadalsec/proto-mcp/internal/buildinfo.version=1.0.2 ..."
 //
 // A plain `go build ./...` or `go install` leaves them empty, so
 // Version/Commit fall back to the VCS metadata the Go toolchain embeds

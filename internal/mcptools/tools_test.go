@@ -6,10 +6,10 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // claudeDesktopNamePattern is the regex Claude Desktop validates tool

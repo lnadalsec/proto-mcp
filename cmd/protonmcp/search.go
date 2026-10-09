@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // searchOutput is the JSON shape `protonmcp search` prints. Mirrors

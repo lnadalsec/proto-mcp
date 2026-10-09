@@ -20,11 +20,11 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
-	"github.com/just-an-oldsalt/proto-mcp/internal/cli"
-	"github.com/just-an-oldsalt/proto-mcp/internal/logging"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/cli"
+	"github.com/lnadalsec/proto-mcp/internal/logging"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // secretEnvNames are the environment variables that may carry credential

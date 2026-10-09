@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // inlineAttachmentMaxBytes is the raw-byte ceiling under which

@@ -12,7 +12,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // --- Issue #116: the approval dialog and the send act on one snapshot ---

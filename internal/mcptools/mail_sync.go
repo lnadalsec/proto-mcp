@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // mail_sync is the model-driven freshness primitive from Phase-3

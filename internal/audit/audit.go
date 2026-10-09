@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
 )
 
 // Entry is the data the middleware passes into Begin. ID is

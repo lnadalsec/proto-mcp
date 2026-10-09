@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // ErrNoTTY is returned by the prompt helpers when /dev/tty isn't available

@@ -13,9 +13,9 @@ import (
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcp"
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcp"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // Drafts. Four tools sharing the encryption-on-write path that the

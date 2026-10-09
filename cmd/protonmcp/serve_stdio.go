@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/serve"
-	"github.com/just-an-oldsalt/proto-mcp/internal/session"
+	"github.com/lnadalsec/proto-mcp/internal/serve"
+	"github.com/lnadalsec/proto-mcp/internal/session"
 )
 
 // runServeStdio is the MCP entry point. Claude Desktop spawns this

@@ -10,7 +10,7 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // fakeProton is a minimal stand-in for the Proton API: the handler

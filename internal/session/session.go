@@ -16,8 +16,8 @@ import (
 
 	gpa "github.com/ProtonMail/go-proton-api"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/keystore"
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/keystore"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
 )
 
 // Bundle is everything a long-running subcommand needs to talk to

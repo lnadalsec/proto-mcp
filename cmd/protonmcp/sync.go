@@ -9,9 +9,9 @@ import (
 	"os"
 	"time"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	"github.com/lnadalsec/proto-mcp/internal/store"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // runSync drains pending events into the local mirror. Phase-2 plan

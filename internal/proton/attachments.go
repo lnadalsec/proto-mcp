@@ -8,7 +8,7 @@ import (
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
 )
 
 // AttachmentPayload is the decrypted plaintext bytes of an attachment

@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/logging"
+	"github.com/lnadalsec/proto-mcp/internal/logging"
 )
 
 // jsonlMirror appends one JSON line per completed audit entry to a

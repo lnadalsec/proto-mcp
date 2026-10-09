@@ -9,7 +9,7 @@ import (
 	gpa "github.com/ProtonMail/go-proton-api"
 	"github.com/go-resty/resty/v2"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // ErrSessionExpired wraps the family of errors that mean "the stored

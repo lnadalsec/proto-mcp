@@ -25,9 +25,9 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcperrors"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/mcperrors"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // Source identifies how an approval was obtained. Recorded in the

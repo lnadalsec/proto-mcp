@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
-	syncpkg "github.com/just-an-oldsalt/proto-mcp/internal/sync"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
+	syncpkg "github.com/lnadalsec/proto-mcp/internal/sync"
 )
 
 // calendarScopeLog de-duplicates the daemon's "calendar events are

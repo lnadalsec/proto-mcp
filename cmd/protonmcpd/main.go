@@ -35,11 +35,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/logging"
-	"github.com/just-an-oldsalt/proto-mcp/internal/serve"
-	"github.com/just-an-oldsalt/proto-mcp/internal/session"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/logging"
+	"github.com/lnadalsec/proto-mcp/internal/serve"
+	"github.com/lnadalsec/proto-mcp/internal/session"
 )
 
 func main() {

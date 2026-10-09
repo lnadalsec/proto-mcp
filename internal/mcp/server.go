@@ -10,11 +10,11 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
-	"github.com/just-an-oldsalt/proto-mcp/internal/audit"
-	"github.com/just-an-oldsalt/proto-mcp/internal/buildinfo"
-	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/approval"
+	"github.com/lnadalsec/proto-mcp/internal/audit"
+	"github.com/lnadalsec/proto-mcp/internal/buildinfo"
+	"github.com/lnadalsec/proto-mcp/internal/caller"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // ServerName is what we report in the initialize handshake's

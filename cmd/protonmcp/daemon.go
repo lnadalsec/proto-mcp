@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/policy"
+	"github.com/lnadalsec/proto-mcp/internal/policy"
 )
 
 // `protonmcp daemon` subcommand. Phase 6/C. Manages the launchd

@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/sanitize"
+	"github.com/lnadalsec/proto-mcp/internal/sanitize"
 )
 
 // Untrusted-content fencing (D22 / PROTO-138).

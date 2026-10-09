@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/secret"
+	"github.com/lnadalsec/proto-mcp/internal/secret"
 )
 
 // TestSessionCloseIdempotent verifies the sync.Once guard. A Session

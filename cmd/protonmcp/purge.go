@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/just-an-oldsalt/proto-mcp/internal/mcptools"
-	"github.com/just-an-oldsalt/proto-mcp/internal/store"
+	"github.com/lnadalsec/proto-mcp/internal/mcptools"
+	"github.com/lnadalsec/proto-mcp/internal/store"
 )
 
 // runPurge hard-deletes cached message bodies older than a cutoff.

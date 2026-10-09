@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	protonclient "github.com/just-an-oldsalt/proto-mcp/internal/proton"
+	protonclient "github.com/lnadalsec/proto-mcp/internal/proton"
 )
 
 // Lock must not zero the session while a tool call still uses it:
