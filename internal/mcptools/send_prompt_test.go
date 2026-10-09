@@ -39,3 +39,63 @@ func TestSendPromptBody_NoNewlineInjection(t *testing.T) {
 		t.Errorf("expected exactly one framework BCC line, body was:\n%s", body)
 	}
 }
+
+// The dialog must show the address that will be sent to, not a
+// normalized look-alike: fullwidth "ａlice" used to be displayed as
+// "alice" (NFKC) while the raw address went out. Now the raw address is
+// shown and a warning line names the suspect code points.
+func TestSendDialog_FlagsNonASCIIRecipients(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{
+		"subject": "hi",
+		"to":      []string{"\uff41lice@example.com", "bob@example.com"},
+		"cc":      []string{"carol\u200b@example.com"},
+		"bcc":     []string{"dave@xn--exmple-cua.com"},
+	})
+	_, body, _, err := sendPromptSnapshot(Deps{}, "mail_send")(context.Background(), args)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	checkDialog(t, body, "\uff41lice@example.com", "bob@example.com", "dave@xn--exmple-cua.com")
+	if strings.Contains(body, "To: alice@") {
+		t.Errorf("fullwidth address displayed as ASCII:\n%s", body)
+	}
+	var warn string
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "WARNING:") {
+			warn = l
+		}
+	}
+	if warn == "" {
+		t.Fatalf("no warning line:\n%s", body)
+	}
+	for _, want := range []string{"U+FF41", "U+200B", "punycode domain"} {
+		if !strings.Contains(warn, want) {
+			t.Errorf("warning missing %q: %s", want, warn)
+		}
+	}
+	if strings.Contains(warn, "bob@example.com") {
+		t.Errorf("plain ASCII address flagged: %s", warn)
+	}
+	// The warning sits with the recipients, before Subject.
+	if strings.Index(body, "WARNING:") > strings.Index(body, "\nSubject:") {
+		t.Errorf("warning comes after Subject:\n%s", body)
+	}
+}
+
+func TestSendDialog_NoWarningForASCII(t *testing.T) {
+	_, body, _, err := sendPromptSnapshot(Deps{}, "mail_send")(context.Background(),
+		json.RawMessage(`{"to":["alice@example.com"],"subject":"h\u00e9llo"}`))
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if strings.Contains(body, "WARNING") {
+		t.Errorf("unexpected warning for ASCII recipients:\n%s", body)
+	}
+}
+
+func TestAddressNote_CapsCodePoints(t *testing.T) {
+	note := addressNote("\u0430\u0431\u0432\u0433\u0434\u0435\u0436\u0437\u0438\u0439@x.com")
+	if !strings.HasSuffix(note, "...") || strings.Count(note, "U+") != maxFlaggedRunes {
+		t.Errorf("addressNote = %q", note)
+	}
+}

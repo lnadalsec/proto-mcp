@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/just-an-oldsalt/proto-mcp/internal/approval"
 	"github.com/just-an-oldsalt/proto-mcp/internal/audit"
 	"github.com/just-an-oldsalt/proto-mcp/internal/caller"
@@ -476,10 +474,14 @@ func defaultPromptBody(tool string, args json.RawMessage, _ *policy.ToolPolicy) 
 //     "moc.live@ecila". Strip them.
 //  3. Zero-width joiners hiding additional content.
 //  4. AppKit OOM from multi-MB strings. Cap.
-//  5. Look-alike Unicode glyphs (Cyrillic 'а' vs Latin 'a').
-//     NFKC normalization folds many compatibility forms; not a
-//     full homograph defense (those need explicit allowlisting)
-//     but cheap and helps.
+//
+// The text is NOT Unicode-normalized. An earlier NFKC pass folded
+// fullwidth "ａlice@…" to "alice@…" in the dialog while the raw
+// address was what got sent, so the user approved something other
+// than what happened. The dialog now shows the code points it is
+// given (minus the invisible ones above); look-alike characters in
+// recipient addresses are called out by the send-family dialog
+// builders instead (internal/mcptools recipientLines).
 //
 // Exported so internal/mcptools' per-tool PromptBody builders can
 // call it without re-implementing the same logic.
@@ -503,8 +505,8 @@ var ErrPromptTooLong = errors.New("approval dialog text is too long to show in f
 // must never be truncated (issue #125). Truncation can cut off the
 // fields that decide the call, such as a trailing BCC line on a send,
 // so a dialog over maxRunes is refused with ErrPromptTooLong instead.
-// The length is measured after normalization and stripping, on the
-// exact text the user would see.
+// The length is measured after stripping, on the exact text the user
+// would see.
 func SanitizePromptTextStrict(in string, maxRunes int) (string, error) {
 	if maxRunes <= 0 {
 		maxRunes = 4000
@@ -516,10 +518,9 @@ func SanitizePromptTextStrict(in string, maxRunes int) (string, error) {
 	return out, nil
 }
 
-// sanitizePromptRunes is the normalize-and-strip half of
-// SanitizePromptText, without the length cap.
+// sanitizePromptRunes is the strip half of SanitizePromptText, without
+// the length cap. Invalid UTF-8 bytes come out as U+FFFD.
 func sanitizePromptRunes(in string) string {
-	in = norm.NFKC.String(in)
 	var b strings.Builder
 	b.Grow(len(in))
 	for _, r := range in {
@@ -544,7 +545,8 @@ func sanitizePromptRunes(in string) string {
 			r == 0x2066, r == 0x2067, r == 0x2068, r == 0x2069: // bidi isolate
 			// Drop bidi-control codepoints entirely.
 		case r == 0x200b || r == 0x200c || r == 0x200d || r == 0xfeff,
-			r >= 0x2060 && r <= 0x2064: // word joiner, invisible operators
+			r >= 0x2060 && r <= 0x2064,   // word joiner, invisible operators
+			r >= 0xe0000 && r <= 0xe007f: // tag characters
 			// Zero-width / invisible characters — drop.
 		default:
 			b.WriteRune(r)

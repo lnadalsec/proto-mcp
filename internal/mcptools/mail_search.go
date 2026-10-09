@@ -33,7 +33,7 @@ func mailSearch(deps Deps) mcp.Tool {
 			"All criteria are AND-joined. Date range can also be supplied as " +
 			"top-level since / until params (RFC3339 or YYYY-MM-DD). " +
 			"Read-only — does NOT pull fresh data from Proton; " +
-			"call mail_sync first if the user implies they want recent activity.",
+			"call mail_sync first if the user implies they want recent activity." + untrustedFieldsNote,
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -94,7 +94,7 @@ func mailSearch(deps Deps) mcp.Tool {
 			for _, h := range hits {
 				summaries = append(summaries, hitToSummary(h))
 			}
-			res := listResult{Messages: summaries}
+			res := listResult{Messages: summaries, UntrustedFields: messageUntrustedFields}
 			if len(hits) >= store.EffectiveSearchLimit(opts.Limit) {
 				res.NextCursor = encodeCursor(opts.Offset+len(hits), qhash)
 			}
